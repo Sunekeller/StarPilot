@@ -6,6 +6,7 @@ from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui.onroad_state import ObservationKind, OnroadState, slc_accept_available
 from openpilot.starpilot.ui.unified_speed_presentation import displayed_limit_mps
+from openpilot.starpilot.speed_limits.acceptance import CONFIRMATION_NS
 
 
 CONFIRMATION_PULSES = ((0.0, .7), (.9, .7))
@@ -58,7 +59,7 @@ class SpeedLimitPulse:
 
   def confirmation_strength(self, now: float) -> float:
     elapsed = now - self.start_time
-    if not self.manual_pending or not 0 <= elapsed < 10:
+    if not self.manual_pending or not 0 <= elapsed < CONFIRMATION_NS / 1e9:
       return 0.0
     phase = elapsed % CONFIRMATION_CYCLE_SECONDS
     for start, duration in CONFIRMATION_PULSES:

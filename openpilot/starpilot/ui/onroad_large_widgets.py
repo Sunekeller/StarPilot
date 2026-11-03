@@ -80,7 +80,7 @@ class UnifiedSpeedWidget:
     if shown.mode != 'limit_only':
       if shown.max_text == '–':
         center = rect.x + 120
-        draw_caption(self.fonts, 'SET', center, rect.y + 15, unit=shown.unit, centered=True)
+        draw_caption(self.fonts, 'SET', center, rect.y + 14, unit=shown.unit, centered=True)
         draw_line(Profile.LARGE, rl.Vector2(center - 28, rect.y + 101), rl.Vector2(center + 28, rect.y + 101), 8, MUTED)
       elif manual_slc_confirmation(Profile.LARGE, state):
         x = rect.x + PADDING
@@ -91,8 +91,8 @@ class UnifiedSpeedWidget:
         draw_ink(self.fonts, shown.max_text, FontRole.SET_SPEED, size, x, rect.y + 51, text)
       else:
         center = rect.x + 120
-        draw_caption(self.fonts, 'SET', center, rect.y + 15, unit=shown.unit, centered=True)
-        size = 114.28
+        draw_caption(self.fonts, 'SET', center, rect.y + 14, unit=shown.unit, centered=True)
+        size = 108
         size *= min(1, 200 / max(1, self.fonts.measure(shown.max_text, FontRole.SET_SPEED, size).width))
         left, right = self.fonts.horizontal_ink(shown.max_text, FontRole.SET_SPEED, size)
         top, bottom = self.fonts.vertical_ink(shown.max_text, FontRole.SET_SPEED, size)

@@ -1,18 +1,13 @@
-# Set-speed override
+# Driver inputs
 
-Only a qualified driver set-speed change can create an SLC override. Either an
-increase or decrease qualifies when the resulting speed differs from the most
-recently applied set speed. Card's qualified application receipt records the
-rounded value; only a 0.001 m/s transport tolerance applies. The causal ledger
-excludes automatic changes, consumed
-confirmation presses, duplicated effects and foreign or obsolete contexts.
+Ordinary cruise +/- changes the driver's SET ceiling. It does not bypass SLC, create
+a persistent override, or cross out the sign. The causal ledger still distinguishes
+driver actions and consumed confirmations. SLC has no separate override reducer.
 
-Override is presentation state; it never adds another planner target. Card's set
-speed remains the sole cruise target. The widget crosses out its latest source
-limit while override is active. A new limit is adopted immediately in automatic mode
-or follows the ten-second manual confirmation policy. Acceptance clears the old override. Returning
-the selected speed to the adopted adjusted limit also clears it.
+Normal accelerator handling belongs to the vehicle controls. SLC never raises or
+latches its target from pedal speed. Confirmation remains available while the
+driver is engaged, including when the native controls temporarily yield to the pedal.
 
-Accelerator use neither creates an override nor cancels a preexisting set-speed
-choice. Authority transitions still suppress commands and invalidate action origins;
-reversed clocks and malformed evidence remain fail-closed. See [README](README.md).
+Source loss uses the previous accepted limit plus the current offset, up to SET.
+That remembered limit survives re-engagement and restarts; applying it still needs
+current vehicle coordinates and system-longitudinal authority. See [README](README.md).

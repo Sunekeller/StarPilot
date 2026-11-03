@@ -346,6 +346,7 @@ struct SlcState @0xa1680744031fdb2d {
   # Qualified adoption proposal; the current displayed observation stays above.
   upcomingSpeedLimit @57 :Float32;
   upcomingBoundaryId @58 :Text;
+  acceptedIsPreview @59 :Bool; # a temporary ceiling, ineligible for initializing SET
   struct SourceReading {
     source @0 :Text;
     enabled @1 :Bool;

@@ -1,6 +1,7 @@
-"""SET and RES adopt qualified current limits, with normal resume as fallback."""
+"""Fresh software SET can match a qualified limit; RES preserves the previous SET."""
 from collections import deque
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import math
@@ -11,8 +12,10 @@ from opendbc.car.dashboard_speed_limit import Status
 from opendbc.car.structs import car
 from openpilot.cereal import messaging
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.selfdrive.car import card, cruise
 from openpilot.selfdrive.controls.plannerd import queue_cruise_event
+from openpilot.starpilot.speed_limits.acceptance import AcceptedLimit, Candidate, IdentityKind, ObservationIdentity
 from openpilot.starpilot.speed_limits import physical_actions
 from openpilot.starpilot.speed_limits.runtime import Action, CruiseEvent, Runtime
 from openpilot.starpilot.speed_limits.runtime_settings import parse
@@ -35,7 +38,7 @@ def drive(*, metric=False, limit=45., offset=5., confirmation=True):
   sm['carControl'].enabled = sm['carControl'].longActive = False
   units = CV.KPH_TO_MS if metric else CV.MPH_TO_MS
   sm['slcDashboardObservation'].speedMps = limit * units
-  settings = replace(parse({'SpeedLimitController': True, 'SLCPriority1': 'Dashboard', 'SLCConfirmation': confirmation}),
+  settings = replace(parse({'SpeedLimitController': True, 'SLCPriority1': 'Dashboard', 'SLCConfirmation': int(confirmation)}),
                      offsets=OffsetSchedule((OffsetBand(0., None, offset * units),)))
   runtime = Runtime(settings, is_metric=metric)
   state = runtime.step(sm, cp, now_ns=START).message.slcState
@@ -46,13 +49,14 @@ def drive(*, metric=False, limit=45., offset=5., confirmation=True):
   return runtime, sm, cp
 
 
-def owner(sm, cp, *, metric=False, resume=None):
+def owner(sm, cp, *, metric=False, resume=None, match=True):
   instance = card.Car.__new__(card.Car)
   instance.CP, instance.sm = cp, sm
   instance.CC_prev = car.CarControl(enabled=False)
   instance.CS_prev = car.CarState(vEgo=sm['carState'].vEgo)
   instance.is_metric, instance.experimental_mode, instance.initial_cruise_speed = metric, False, 40
   instance.slc_control_enabled = instance.slc_replay = True
+  instance.slc_match_on_engage = match
   instance.slc_source_floor_ns = 0
   instance.slc_producer_session, instance.slc_cruise_event_id = 'card-producer', 0
   instance.slc_receipts = []
@@ -84,13 +88,47 @@ def receipt(instance, *, now=START + 10_000_000, event_id=1):
                      kind, str(state.sessionId), int(state.decisionId), int(state.presentationId))
 
 
+@pytest.mark.parametrize('raw,match', [(None, False), (b'0', False), (b'1', True), (b'yes', False)])
+def test_engagement_matching_requires_an_enabled_saved_toggle(tmp_path, raw, match):
+  _, sm, cp = drive()
+  instance = owner(sm, cp)
+  instance.params = Params(str(tmp_path))
+  assert not instance.params.get_default_value('SLCOnEngage')
+  if raw is not None:
+    Path(instance.params.get_param_path('SLCOnEngage')).write_bytes(raw)
+  instance.slc_match_on_engage = instance.read_slc_match_on_engage()
+  assert instance.slc_match_on_engage == match
+  engage(instance)
+  assert instance.v_cruise_helper.v_cruise_kph == (80.5 if match else 72.)
+
+
+@pytest.mark.parametrize('resume', [False, True])
+@pytest.mark.parametrize('live', [False, True])
+def test_match_on_engage_uses_saved_history_as_a_fallback(resume, live):
+  runtime, sm, cp = drive()
+  previous = AcceptedLimit(Candidate('map', ObservationIdentity(IdentityKind.GEOGRAPHIC, value='old-road'), 25 * CV.MPH_TO_MS),
+                           'previous-drive', 0)
+  runtime = Runtime(runtime.settings, previous_limit=previous)
+  if not live:
+    sm['slcDashboardObservation'].status = 'unknown'
+  prepared = runtime.step(sm, cp, now_ns=START).message.slcState
+  assert prepared.hasAcceptedAdjustedLimit and prepared.hasPresentationAdjustedLimit == live
+  sm.data['slcState'] = prepared
+  instance = owner(sm, cp, resume=resume)
+  if resume:
+    instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
+  engage(instance)
+  assert instance.v_cruise_helper.v_cruise_kph == (105. if resume else 80.5 if live else 48.3)
+  assert bool(instance.slc_receipts) == (live and not resume)
+
+
 @pytest.mark.parametrize('confirmation', [False, True])
 @pytest.mark.parametrize('pcm', [False, True])
 @pytest.mark.parametrize('resume,previous', [(False, cruise.V_CRUISE_UNSET), (True, 30.), (None, 105.)],
                          ids=['set', 'resume-hint', 'resume-button'])
 @pytest.mark.parametrize('metric,limit,offset', [(False, 45., 5.), (False, 20., -2.), (False, 55., -.4),
                                               (True, 72., 5.), (True, 30., -2.), (True, 72., -.4)])
-def test_prepared_limit_initializes_set_once_and_adopts_it(metric, limit, offset, confirmation, pcm, resume, previous):
+def test_limit_matches_only_new_software_set_and_resume_preserves_ceiling(metric, limit, offset, confirmation, pcm, resume, previous):
   runtime, sm, cp = drive(metric=metric, limit=limit, offset=offset, confirmation=confirmation)
   cp.pcmCruise = pcm
   prepared = sm['slcState']
@@ -101,18 +139,22 @@ def test_prepared_limit_initializes_set_once_and_adopts_it(metric, limit, offset
   if resume is None:
     instance.CS_prev.buttonEvents = [car.CarState.ButtonEvent(type='accelCruise', pressed=False)]
   engage(instance)
-  expected = cruise.slc_target_kph(float(prepared.presentationAdjustedLimit), metric)
-  assert instance.v_cruise_helper.v_cruise_kph == expected
-  assert instance.v_cruise_helper.v_cruise_cluster_kph == expected
-  adopted = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=receipt(instance))
+  matched = not pcm and resume is False
+  expected = cruise.slc_target_kph(float(prepared.presentationAdjustedLimit), metric) if matched else 60. if pcm else previous
+  assert instance.v_cruise_helper.v_cruise_kph == pytest.approx(expected)
+  assert instance.v_cruise_helper.v_cruise_cluster_kph == pytest.approx(expected)
+  adopted = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=receipt(instance) if matched else None)
+  if not matched:
+    assert not instance.slc_receipts
+    return
   assert not adopted.result.errors and adopted.message.slcState.hasAccepted
   assert not adopted.message.slcState.hasPending and not adopted.message.slcState.driverOverrideActive
-  assert adopted.message.slcState.actionStatus == 'adopt' and adopted.command is None
+  assert adopted.message.slcState.actionStatus == 'adopt'
   assert runtime.ledger.transactions == ()
   instance.CC_prev.enabled = True
   instance.slc_receipts.clear()
   engage(instance, now=START + 20_000_000)
-  assert instance.v_cruise_helper.v_cruise_kph == expected and instance.slc_receipts == []
+  assert instance.v_cruise_helper.v_cruise_kph == pytest.approx(expected) and instance.slc_receipts == []
 
 
 @pytest.mark.parametrize('invalid', ['disabled', 'stale', 'unknown', 'stock-long', 'can-fault', 'wrong-episode', 'configuration'])
@@ -182,12 +224,13 @@ def test_card_publication_routes_engagement_to_runtime_and_preserves_later_confi
   events = deque()
   queue_cruise_event(published.as_reader(), events, deque())
   assert len(events) == 1 and events[0].kind == 'engagementAdopt'
+  assert events[0].command_id == 0
   first = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=events.popleft())
-  assert first.message.slcState.hasAccepted and first.command is None
+  assert first.message.slcState.hasAccepted
   sm.advance(START + 50_000_000)
   sm['slcDashboardObservation'].speedMps = 55 * CV.MPH_TO_MS
   later = runtime.step(sm, cp, now_ns=START + 50_000_000)
-  assert later.message.slcState.hasPending and later.command is None
+  assert later.message.slcState.hasPending
 
 
 @pytest.mark.parametrize('change', ['session', 'presentation', 'producer', 'replaced-source', 'changed-set', 'stale', 'replay'])
@@ -212,7 +255,7 @@ def test_engagement_receipt_cannot_adopt_unrelated_or_stale_work(change):
   else:
     runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=event)
   output = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=event)
-  assert output.message.slcState.actionStatus != 'adopt' and output.command is None
+  assert output.message.slcState.actionStatus != 'adopt'
   assert runtime.ledger.transactions == ()
 
 
@@ -238,31 +281,13 @@ def test_reengagement_clears_previous_decline(resume):
   if resume:
     instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
   engage(instance)
+  if resume:
+    assert instance.v_cruise_helper.v_cruise_kph == 105. and not instance.slc_receipts
+    assert runtime.state.acceptance.rejected
+    return
   adopted = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=receipt(instance))
   assert adopted.message.slcState.actionStatus == 'adopt' and adopted.message.slcState.hasAccepted
-  assert not adopted.message.slcState.hasPending and adopted.command is None
-
-
-@pytest.mark.parametrize('resume', [False, True])
-def test_reengagement_clears_override_even_after_previous_application(resume):
-  runtime, sm, cp = drive()
-  instance = owner(sm, cp, resume=resume)
-  engage(instance)
-  runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=receipt(instance))
-  previous = float(sm['carState'].vCruise) / 3.6
-  sm.advance(START + 20_000_000)
-  sm['carState'].vCruise = sm['carState'].vCruiseCluster = 105.
-  overridden = runtime.step(sm, cp, now_ns=START + 20_000_000,
-    cruise_event=CruiseEvent(2, START + 20_000_000, previous, 105 / 3.6, 'accel', 'card-producer', START + 20_000_000))
-  assert overridden.message.slcState.driverOverrideActive
-  sm.data['slcState'] = overridden.message.slcState
-  instance.CC_prev.enabled = False
-  instance.slc_receipts.clear()
-  engage(instance, now=START + 30_000_000)
-  adopted = runtime.step(sm, cp, now_ns=START + 30_000_000,
-    cruise_event=receipt(instance, now=START + 30_000_000, event_id=3))
-  assert adopted.message.slcState.actionStatus == 'adopt' and not adopted.message.slcState.driverOverrideActive
-  assert adopted.message.slcState.commandStatus == 'applied' and adopted.command is None
+  assert not adopted.message.slcState.hasPending
 
 
 @pytest.mark.parametrize('source', ['Maps', 'Vision'])
@@ -296,8 +321,11 @@ def test_engagement_uses_existing_priority_and_qualified_secondary_source(source
   if resume:
     instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
   engage(instance)
-  expected = cruise.slc_target_kph(float(prepared.presentationAdjustedLimit), False)
-  assert instance.v_cruise_helper.v_cruise_kph == expected
+  expected = 105. if resume else cruise.slc_target_kph(float(prepared.presentationAdjustedLimit), False)
+  assert instance.v_cruise_helper.v_cruise_kph == pytest.approx(expected)
+  if resume:
+    assert not instance.slc_receipts
+    return
   # ReplaySM.advance uses monotonic stamps for every service; mapd uses boottime.
   if source == 'Maps':
     sm.logMonoTime['mapdOut'] = boot
@@ -307,14 +335,17 @@ def test_engagement_uses_existing_priority_and_qualified_secondary_source(source
 
 @pytest.mark.parametrize('confirmation', [False, True])
 @pytest.mark.parametrize('resume', [False, True])
-def test_engagement_uses_current_limit_over_previous_early_proposal(confirmation, resume):
+@pytest.mark.parametrize('live', [False, True])
+def test_engagement_never_initializes_set_from_a_preview(confirmation, resume, live):
   from openpilot.starpilot.speed_limits.tests.test_advance import Drive
   preview = Drive(confirm=confirmation)
   output = preview.tick()
   assert output.message.slcState.upcomingBoundaryId
   preview.sm['carControl'].enabled = preview.sm['carControl'].longActive = False
-  prepared = preview.tick().message.slcState
+  prepared = preview.tick(alive=live).message.slcState
+  assert prepared.acceptedIsPreview == (not confirmation)
   sm, cp = preview.sm, preview.cp
+  cp.pcmCruise = False
   sm.data['slcState'] = prepared
   sm.valid['slcState'] = sm.alive['slcState'] = True
   sm.logMonoTime['slcState'] = preview.now
@@ -323,11 +354,22 @@ def test_engagement_uses_current_limit_over_previous_early_proposal(confirmation
     instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
   stamp = preview.now + 10_000_000
   engage(instance, now=stamp)
+  if resume:
+    assert instance.v_cruise_helper.v_cruise_kph == 105. and not instance.slc_receipts
+    return
+  if not live:
+    assert instance.v_cruise_helper.v_cruise_kph == (79. if confirmation else 72.)
+    assert not instance.slc_receipts
+    return
   assert instance.v_cruise_helper.v_cruise_kph == 79.
   adopted = preview.tick(at=stamp, event=receipt(instance, now=stamp))
   assert adopted.message.slcState.acceptedSpeedLimit == 20.
   assert not adopted.message.slcState.hasPending and not adopted.message.slcState.upcomingBoundaryId
-  assert adopted.message.slcState.actionStatus == 'adopt' and adopted.command is None
+  assert adopted.message.slcState.actionStatus == 'adopt'
+
+  turned = preview.tick(way=3, target=0.).message.slcState
+  assert not turned.acceptedIsPreview and turned.acceptedSpeedLimit == 20.
+  assert sm['carState'].vCruise == 79.
 
 
 @pytest.mark.parametrize('current', [20., 25.])
@@ -339,6 +381,7 @@ def test_delayed_engagement_is_bound_to_current_limit(current, resume):
   preview.sm['carControl'].enabled = preview.sm['carControl'].longActive = False
   prepared = preview.tick().message.slcState
   sm, cp = preview.sm, preview.cp
+  cp.pcmCruise = False
   sm.data['slcState'] = prepared
   sm.valid['slcState'] = sm.alive['slcState'] = True
   sm.logMonoTime['slcState'] = preview.now
@@ -347,11 +390,14 @@ def test_delayed_engagement_is_bound_to_current_limit(current, resume):
     instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
   stamp = preview.now + 10_000_000
   engage(instance, now=stamp)
+  if resume:
+    assert instance.v_cruise_helper.v_cruise_kph == 105. and not instance.slc_receipts
+    return
   event = receipt(instance, now=stamp)
   pending = preview.tick(at=stamp + 40_000_000, current=current).message.slcState
   delayed = preview.tick(at=stamp + 90_000_000, current=current, event=event)
   state = delayed.message.slcState
-  assert not delayed.result.errors and delayed.command is None
+  assert not delayed.result.errors
   assert sm['carState'].vCruise == 79. and state.acceptedSpeedLimit == 20.
   assert (state.actionStatus == 'adopt') == (current == 20.)
   assert state.hasPending == (current != 20.)

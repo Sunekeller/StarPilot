@@ -57,15 +57,16 @@ def tap_control(touch, current, kind):
   touch.release(x, y, current)
 
 
-def test_dispatcher_can_dismiss_retained_choice_without_authorizing_stale_accept():
-  current = native_state(presentation=0)
-  current.observationKind, current.source, current.speedLimit = 'unknown', 'none', 0.
-  publisher = Mock()
-  dispatch = SlcActionDispatcher(publisher, lambda now: current, clock=lambda: NOW)
-  request = SlcUiRequest(SlcActionKind.ACCEPT, current.sessionId, current.decisionId, 0, 22.)
-  assert not dispatch.dispatch(request)
-  assert dispatch.dispatch(replace(request, kind=SlcActionKind.REJECT))
-  assert publisher.send.call_count == 1
+def test_dispatcher_can_accept_or_reject_the_presented_choice_during_a_source_gap():
+  for kind in (SlcActionKind.ACCEPT, SlcActionKind.REJECT):
+    current = native_state()
+    current.observationKind, current.source, current.speedLimit = 'unknown', 'none', 0.
+    publisher = Mock()
+    dispatch = SlcActionDispatcher(publisher, lambda now, current=current: current, clock=lambda: NOW)
+    request = SlcUiRequest(kind, current.sessionId, current.decisionId, current.presentationId, 22.)
+    assert not dispatch.dispatch(replace(request, presentation_id=0))
+    assert dispatch.dispatch(request)
+    assert publisher.send.call_count == 1
 
 
 class TestSlcTouch(unittest.TestCase):

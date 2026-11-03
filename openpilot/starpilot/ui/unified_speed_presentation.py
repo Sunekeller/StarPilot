@@ -17,6 +17,8 @@ class UnifiedSpeedPresentation:
   limit_text: str
   status: str
   proposal_text: str
+  override_text: str | None
+  slc_target_text: str | None = None
 
   @property
   def max_status(self) -> str:
@@ -29,19 +31,6 @@ class UnifiedSpeedPresentation:
 
 def positive(value):
   return value is not None and math.isfinite(value) and value > 0
-
-
-def toyota_cruise_notice(state):
-  if not positive(state.toyota_cruise_target_kph):
-    return None
-  value = round(state.toyota_cruise_target_kph * (1 if state.metric else 0.6213711922))
-  copy = {
-    'raise_dash': ('Raise', 'dash cruise to'),
-    'release_plus': ('Release', 'cruise + to use'),
-    'off_hold': ('SLC off', 'Dash cruise'),
-    'off_resume': ('SLC off', 'Resume at'),
-  }.get(state.toyota_cruise_status)
-  return (*copy, str(value), 'km/h' if state.metric else 'mph') if copy is not None else None
 
 
 def retaining_limit(observation):
@@ -83,6 +72,7 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
   posted = displayed_limit_mps(obs)
   target = displayed_adjusted_limit_mps(obs)
   pending = positive(obs.pending_speed_limit_mps)
+  slc_limiting = bool(obs.action_enabled and obs.limiting_max_set and obs.source != 'unknown')
   if confirmation and pending:
     posted = obs.pending_speed_limit_mps
     target = obs.pending_adjusted_limit_mps
@@ -97,8 +87,11 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
     if adjustment:
       offset = f'{adjustment:+d}'
   status = 'Cruise off'
-  if (getattr(obs, 'status', '') == 'display_hold' or pending and obs.presentation_id == 0 or
-      str(obs.kind) != 'valid' and positive(obs.last_received_speed_limit_mps)):
+  if (confirmation and pending and not obs.automatic_adoption_pending and
+      obs.action_enabled and obs.presentation_id and obs.presentation_id > 0):
+    status = 'Confirm speed limit'
+  elif (getattr(obs, 'status', '') == 'display_hold' or pending and obs.presentation_id == 0 or
+      retaining_limit(obs)):
     status = 'Unavailable'
   elif not obs.action_enabled:
     status = 'Display only'
@@ -108,6 +101,8 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
     status = 'Adopting limit' if getattr(obs, 'automatic_adoption_pending', False) else 'Confirm speed limit'
   elif state.longitudinal_overridden:
     status = 'Using accelerator'
+  elif state.cruise_active and slc_limiting:
+    status = 'Using speed limit'
   elif state.cruise_active:
     status = 'Using set speed'
   max_text = speed(state.cruise_kph / 3.6) if positive(state.cruise_kph) else '–'
@@ -119,7 +114,14 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
   if pending:
     proposal = obs.pending_adjusted_limit_mps or (
       target if obs.pending_speed_limit_mps == posted else obs.pending_speed_limit_mps + (obs.offset_mps or 0))
+  active_target = obs.effective_cluster_target_mps
+  show_target = (state.longitudinal_active and slc_limiting and not obs.driver_override_active and
+                 positive(posted) and positive(active_target) and speed(active_target) != speed(target if offset else posted))
   return UnifiedSpeedPresentation(mode, max_text, speed(posted), offset, 'km/h' if state.metric else 'mph',
                                   source, pending,
-                                  'max' if state.cruise_active else 'none', speed(target), status,
-                                  speed(proposal))
+                                  ('limit' if slc_limiting and not state.longitudinal_overridden else 'max') if state.cruise_active else 'none',
+                                  speed(target), status,
+                                  speed(proposal),
+                                  speed(obs.effective_cluster_target_mps) if obs.driver_override_active and
+                                  positive(obs.effective_cluster_target_mps) else None,
+                                  speed(active_target) if show_target else None)
