@@ -7,6 +7,7 @@ from typing import cast
 from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui.large_speed_geometry import LARGE_SIGN_SCALE, CONFIRMATION_SCALE, CONFIRMATION_PADDING
+from openpilot.starpilot.ui.onroad_customization import placement
 from openpilot.starpilot.ui.onroad_state import OnroadState, manual_slc_confirmation, speed_limit_bounds, slc_controls, slc_accept_available
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile
 from openpilot.starpilot.ui.speed_limit_pulse import SpeedLimitPulse
@@ -189,11 +190,14 @@ class SpeedLimitWidget:
 
   def _sign(self, state: OnroadState, bounds, now: float) -> None:
     shown, obs = resolve_unified_speed(state), state.speed_limit
+    last = shown.posted_retained or obs.sign_recovering
     heading = SOURCE_LABELS.get(shown.source, 'SPEED')
+    if last:
+      heading = f'LAST {heading}' if heading != 'SPEED' else 'LAST'
     x, top = bounds[0] + 12, bounds[1] + 12
     scale = self.scale
     pending = shown.pending and not obs.automatic_adoption_pending
-    target = displayed_adjusted_limit_mps(obs) if pending else None
+    target = displayed_adjusted_limit_mps(obs) if pending and not shown.posted_retained else None
     arrow_direction = 0
     if target is not None and state.speed_mps is not None and target != state.speed_mps:
       arrow_direction = -1 if target > state.speed_mps else 1
@@ -221,7 +225,12 @@ class SpeedLimitWidget:
 
     vienna = state.appearance.use_vienna_sign
     sign_center_y = vienna_center_y if vienna else mutcd_center_y
-    active_text = shown.override_text or shown.slc_target_text
+    set_visible = (shown.mode != 'limit_only' if self.profile == Profile.LARGE else
+                   shown.max_text != '–' and placement(state.customization, self.profile, 'max_speed')['enabled'])
+    road_target = shown.limit_text if shown.offset_text else shown.posted_text
+    active_text = shown.override_text
+    if not set_visible and shown.slc_target_text != road_target:
+      active_text = active_text or shown.slc_target_text
     if active_text is not None and shown.posted_text != '–' and not pending:
       override = shown.override_text is not None
       road_role = FontRole.SEMI_BOLD if vienna else FontRole.BOLD
@@ -236,7 +245,10 @@ class SpeedLimitWidget:
       road_text = shown.posted_text + (shown.offset_text or '') if not override else shown.posted_text
       road_size, road_width, road_height = fit(road_text, road_role, 33, 32 if vienna else 38)
       override_size, override_width, override_height = fit(active_text, override_role, 56, 46 if vienna else 55)
-      label, heading_role = ('OVERRIDE' if override else f'{heading} / SLC'), FontRole.SEMI_BOLD
+      label = 'OVERRIDE' if override else f'{heading} / SLC'
+      if override and last:
+        label = 'LAST / OVERRIDE'
+      heading_role = FontRole.SEMI_BOLD
       heading_size = 17 if vienna else 20
       if self.profile == Profile.COMPACT:
         heading_size = 15 if vienna else 14
@@ -281,7 +293,7 @@ class SpeedLimitWidget:
     if vienna and self.profile == Profile.LARGE and not shown.pending:
       heading_size = 21
     left, right, a, b = ink(heading, FontRole.SEMI_BOLD, heading_size)
-    if large_steady and right - left > 96:
+    if not vienna and (large_steady or last) and right - left > 96:
       heading_size *= 96 / (right - left)
       left, right, a, b = ink(heading, FontRole.SEMI_BOLD, heading_size)
     # Lift the Vienna stack to keep the offset clear of the bottom rim.

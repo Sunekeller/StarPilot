@@ -433,8 +433,7 @@ def test_both_sign_styles_contain_text_and_arrows_at_each_profile_scale():
           with patch.object(fonts, 'draw', lambda *args, sink=calls: sink.append(args)), \
                patch.object(widget.shapes, 'arrow') as arrow_draw:
             widget.render(current)
-          assert sum(call[0] == heading for call in calls) == 1, case
-          assert all(call[0] != 'LAST' for call in calls), case
+          assert sum(call[0] == (f'LAST {heading}' if retained else heading) for call in calls) == 1, case
           assert all(call[0] != 'LIMIT' for call in calls), case
           ink = []
           for text, role, size, left, top, color in calls:

@@ -19,6 +19,7 @@ class UnifiedSpeedPresentation:
   proposal_text: str
   override_text: str | None
   slc_target_text: str | None = None
+  posted_retained: bool = False
 
   @property
   def max_status(self) -> str:
@@ -47,6 +48,12 @@ def displayed_limit_mps(observation):
   return observation.accepted_speed_limit_mps if retaining_limit(observation) else None
 
 
+def displayed_limit_source(observation):
+  if str(observation.kind) == 'valid':
+    return observation.source
+  return observation.last_received_source if positive(observation.last_received_speed_limit_mps) else observation.accepted_source
+
+
 def displayed_adjusted_limit_mps(observation):
   posted = displayed_limit_mps(observation)
   if not positive(posted):
@@ -72,9 +79,12 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
   posted = displayed_limit_mps(obs)
   target = displayed_adjusted_limit_mps(obs)
   pending = positive(obs.pending_speed_limit_mps)
-  slc_limiting = bool(obs.action_enabled and obs.limiting_max_set and obs.source != 'unknown')
+  slc_limiting = (state.longitudinal_active and not state.longitudinal_overridden and obs.action_enabled and
+                  obs.limiting_max_set and obs.source != 'unknown' and not obs.driver_override_active)
+  posted_retained = positive(posted) and (str(obs.kind) != 'valid' or obs.status == 'display_hold')
   if confirmation and pending:
     posted = obs.pending_speed_limit_mps
+    posted_retained = False
     target = obs.pending_adjusted_limit_mps
     if not positive(target):
       target = posted + (obs.offset_mps or 0)
@@ -106,8 +116,7 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
   elif state.cruise_active:
     status = 'Using set speed'
   max_text = speed(state.cruise_kph / 3.6) if positive(state.cruise_kph) else '–'
-  source = obs.source if str(obs.kind) == 'valid' else (
-    obs.last_received_source if positive(obs.last_received_speed_limit_mps) else obs.accepted_source)
+  source = displayed_limit_source(obs)
   if confirmation and pending and obs.pending_source not in ('', 'none'):
     source = obs.pending_source
   proposal = None
@@ -115,13 +124,12 @@ def resolve_unified_speed(state, *, confirmation=False) -> UnifiedSpeedPresentat
     proposal = obs.pending_adjusted_limit_mps or (
       target if obs.pending_speed_limit_mps == posted else obs.pending_speed_limit_mps + (obs.offset_mps or 0))
   active_target = obs.effective_cluster_target_mps
-  show_target = (state.longitudinal_active and slc_limiting and not obs.driver_override_active and
-                 positive(posted) and positive(active_target) and speed(active_target) != speed(target if offset else posted))
   return UnifiedSpeedPresentation(mode, max_text, speed(posted), offset, 'km/h' if state.metric else 'mph',
                                   source, pending,
-                                  ('limit' if slc_limiting and not state.longitudinal_overridden else 'max') if state.cruise_active else 'none',
+                                  ('limit' if slc_limiting else 'max') if state.cruise_active else 'none',
                                   speed(target), status,
                                   speed(proposal),
                                   speed(obs.effective_cluster_target_mps) if obs.driver_override_active and
                                   positive(obs.effective_cluster_target_mps) else None,
-                                  speed(active_target) if show_target else None)
+                                  speed(active_target) if slc_limiting and positive(active_target) else None,
+                                  posted_retained)

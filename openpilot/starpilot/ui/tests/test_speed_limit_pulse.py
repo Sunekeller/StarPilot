@@ -133,6 +133,19 @@ def test_display_only_hidden_stale_and_reappearance_do_not_invent_new_limit():
   assert rgba(pulse.color(rl.WHITE, 12.5)) == rgba(rl.WHITE)
 
 
+@pytest.mark.parametrize('held_fields', [{'status': 'display_hold'}, {'sign_recovering': True}])
+def test_retained_display_stops_pulsing_until_a_new_live_limit(held_fields):
+  pulse = SpeedLimitPulse()
+  current = display_state()
+  pulse.update(current, 10.)
+  assert rgba(pulse.color(rl.WHITE, 10.5)) != rgba(rl.WHITE)
+  held = replace(current, speed_limit=replace(current.speed_limit, **held_fields))
+  pulse.update(held, 10.5)
+  assert rgba(pulse.color(rl.WHITE, 10.5)) == rgba(rl.WHITE)
+  pulse.update(display_state(25.), 11.)
+  assert rgba(pulse.color(rl.WHITE, 11.5)) != rgba(rl.WHITE)
+
+
 def test_display_only_new_drive_can_highlight_its_first_limit():
   pulse = SpeedLimitPulse()
   pulse.update(display_state(), 10.)

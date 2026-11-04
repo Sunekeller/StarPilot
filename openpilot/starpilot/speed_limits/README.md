@@ -49,8 +49,13 @@ US signs share a cached antialiased white outline with a transparent interior;
 the offset fits inside the fixed sign height on both screens.
 Both sign styles identify the displayed source: DASH for Dashboard, OSM for offline
 Maps, and VISION for the vision model. Explicit Mapbox readings in historical
-replay use NAV; unidentified sources keep SPEED. Retained readings keep their
-original source label.
+replay use NAV; unidentified live sources show SPEED. A retained road reading
+shows LAST alongside its source when known. For the same source and speed, the
+label clears after 150 ms of live updates. Vision keeps a confirmed sign current
+after it leaves view while the camera pipeline stays healthy. DASH follows the
+current OEM reading, and Maps keeps the current road limit separate from its
+upcoming preview. The binding SLC speed is shown separately beside SET, including
+during a new-limit confirmation.
 Both styles place only this source above the number, beside any pending arrow.
 The source and arrow share a centered row; all sign contents use the same geometry
 on both screens. Small arrows are baked at double resolution and text is aligned
