@@ -151,6 +151,19 @@ class RuntimeSettingsTests(unittest.TestCase):
         self.assertFalse(settings.enabled)
         self.assertTrue(settings.errors)
 
+  def test_wheel_override_is_opt_in_and_bad_bytes_keep_slc_enabled(self):
+    with tempfile.TemporaryDirectory() as directory:
+      params = Params(directory)
+      params.put_bool('SpeedLimitController', True, block=True)
+      self.assertFalse(params.get_default_value('SLCWheelOverride'))
+      self.assertFalse(read_params(params).wheel_override)
+      params.put_bool('SLCWheelOverride', True, block=True)
+      self.assertTrue(read_params(params).wheel_override)
+      Path(params.get_param_path('SLCWheelOverride')).write_bytes(b'bad')
+      settings = read_params(params)
+      self.assertTrue(settings.enabled)
+      self.assertFalse(settings.wheel_override)
+
   def test_retired_offsets_are_unregistered_and_ignored_with_zero_defaults(self):
     for metric in (False, True):
       with self.subTest(metric=metric), tempfile.TemporaryDirectory() as directory:

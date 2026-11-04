@@ -332,6 +332,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SLCAdvanceHigherSeconds", {PERSISTENT, INT, "0"}},
     {"SLCAdvanceLowerSeconds", {PERSISTENT, INT, "0"}},
     {"SLCOverrideMode", {PERSISTENT, INT, "1"}},
+    {"SLCWheelOverride", {PERSISTENT, BOOL, "0"}},
     {"SLCQualifiedHistory", {PERSISTENT, JSON}},
     {"ConditionalModeConfig", {PERSISTENT | DONT_LOG, JSON}},
     {"ConditionalManualState", {PERSISTENT | DONT_LOG, JSON}},

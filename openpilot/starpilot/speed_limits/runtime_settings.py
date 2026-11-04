@@ -22,8 +22,9 @@ ADVANCE_SECONDS = range(11)
 ADVANCE_BYTES = tuple(str(seconds).encode() for seconds in ADVANCE_SECONDS)
 
 PEDAL_OVERRIDE_KEY = 'SLCOverrideMode'
-PEDAL_OVERRIDE_CHOICES = ('Off', 'Hold Reached Speed', 'Use Set Speed')
+PEDAL_OVERRIDE_CHOICES = ('Resume the adjusted limit', 'Hold the speed you reached', 'Use your SET speed')
 PEDAL_OVERRIDE_BYTES = (b'0', b'1', b'2')
+WHEEL_OVERRIDE_KEY = 'SLCWheelOverride'
 
 
 class PedalOverride(IntEnum):
@@ -45,6 +46,7 @@ class Settings:
   advance_higher_seconds: int = 0
   advance_lower_seconds: int = 0
   pedal_override: PedalOverride = PedalOverride.OFF
+  wheel_override: bool = False
 
 
 def _bool(values: Mapping[str, object], key: str, default: bool = False) -> bool:
@@ -95,7 +97,7 @@ def parse(values: Mapping[str, object]) -> Settings:
       pedal_override = PedalOverride.OFF.value
     return Settings(control, display, sel.SelectionPolicy(mode, slots, False), policy, offsets,
                     requested=control, advance_higher_seconds=higher, advance_lower_seconds=lower,
-                    pedal_override=PedalOverride(pedal_override))
+                    pedal_override=PedalOverride(pedal_override), wheel_override=values.get(WHEEL_OVERRIDE_KEY) is True)
   except (ValueError, OverflowError) as error:
     return _disabled(str(error))
 
@@ -105,7 +107,7 @@ SAVED_KEYS = ("SpeedLimitController", "ShowSpeedLimits", "IsMetric", *SOURCE_PRI
 
 
 def read_params(params) -> Settings:
-  values = {}
+  values = {WHEEL_OVERRIDE_KEY: read_saved(params, WHEEL_OVERRIDE_KEY, 1) == (b'1', True)}
   raw_override, readable_override = read_saved(params, PEDAL_OVERRIDE_KEY, 1)
   if raw_override is not None or not readable_override:
     values[PEDAL_OVERRIDE_KEY] = int(raw_override) if readable_override and raw_override in PEDAL_OVERRIDE_BYTES else 0

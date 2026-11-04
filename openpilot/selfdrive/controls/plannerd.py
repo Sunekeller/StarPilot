@@ -124,6 +124,12 @@ def confirm_curve_frame(host: CurveHost | None, planner: LongitudinalPlanner, no
     host.runtime.confirm_applied(now_ns, applied=bool(planner.last_curve_ceiling_applied))
 
 
+def wheel_override_blocked(force_stop: ForceStopRuntime | None, curve_host: CurveHost | None, *, curve_backlog: bool = False) -> bool:
+  # Force Stop can consume RES on the tick it commits, before a forcing plan is published.
+  return ((force_stop is not None and (force_stop.policy.can_commit_next_frame or force_stop.plan.speed_ceiling_mps is not None)) or
+          (curve_host is not None and (curve_backlog or curve_host.runtime.was_controlling)))
+
+
 def conditional_handoff_for_frame(host: ConditionalPlannerHost | None, sm, CP, now_ns: int,
                                   drive_id: int) -> ConditionalHandoff | None:
   if host is None or not CP.openpilotLongitudinalControl or CP.passive or CP.dashcamOnly:
@@ -444,7 +450,10 @@ def starpilot_main():
           else:
             wheel_coast.receive(event, params, CP, sm, now_ns=now_ns)
         pending_wheel = waiting_wheel
-        slc_output = slc_lifecycle.step(sm, now_ns, pending_slc_actions, pending_slc_cruise, drive_changed=drive_changed)
+        # Curve observes the press before SLC sees the release. A queued Curve press can still own the tap.
+        curve_event = current_cruise_event(pending_curve_events, now_ns)
+        slc_output = slc_lifecycle.step(sm, now_ns, pending_slc_actions, pending_slc_cruise, drive_changed=drive_changed,
+          wheel_override_blocked=wheel_override_blocked(force_stop_owner, curve_host, curve_backlog=bool(pending_curve_events)))
         cruise_ceiling = slc_output.result.ceiling if slc_output is not None else None
         if slc_output is not None:
           planner_status = slc_output.message
@@ -507,7 +516,6 @@ def starpilot_main():
         lead_approach_key = lead_approach_for_frame(approach_preferences, sm, CP, now_ns)
         if curve_preferences is not None and curve_host is not None:
           curve_preferences.refresh(curve_host, now_ns)
-        curve_event = current_cruise_event(pending_curve_events, now_ns)
         conditional_handoff = (conditional_handoff_for_frame(conditional_host, sm, CP, clock_pair[0], current_start_ns)
                                if clock_pair is not None else None)
         wheel_coast.conditional_stop = bool(conditional_handoff is not None and conditional_host is not None and
@@ -586,6 +594,8 @@ def starpilot_main():
             mode_owner.sample('switchback', sm, CP, now_ns=now_ns), session=mode_session,
             sequence=mode_sequence, now_ns=now_ns, source_car_control_ns=int(sm.logMonoTime['carControl']))
         if planner_status is not None:
+          if planner_status.slcState.wheelOverrideSince and wheel_override_blocked(force_stop_owner, curve_host):
+            planner_status.slcState.wheelOverrideSince = 0
           pm.send('slcState', planner_status)
         if current_start_ns > 0:
           drive_start_ns = current_start_ns

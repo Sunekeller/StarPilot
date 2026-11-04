@@ -586,15 +586,41 @@ class FeatureSettingsOwnerTests(unittest.TestCase):
 
   def test_gas_pedal_override_uses_the_shared_slc_settings_owner(self):
     row = self._row('slc', 'SLCOverrideMode')
-    self.assertEqual(row.value, 'Hold Reached Speed')
-    self.assertEqual(row.choices, ('Off', 'Hold Reached Speed', 'Use Set Speed'))
-    request = required_change(row)
+    choices = ('Resume the adjusted limit', 'Hold the speed you reached', 'Use your SET speed')
+    self.assertEqual((row.label, row.value), ('After an accelerator override', choices[1]))
+    self.assertEqual(row.choices, choices)
     self.allowed = False
-    self.assertFalse(self.owner.apply(request))
+    self.assertFalse(self.owner.apply(required_change(row)))
     self.allowed = True
+    for mode in (2, 0, 1):
+      self.assertTrue(self.owner.apply(required_change(row)))
+      self.assertEqual(self.params.get('SLCOverrideMode'), mode)
+      row = self._row('slc', 'SLCOverrideMode')
+      self.assertEqual(row.value, choices[mode])
+
+    Path(self.params.get_param_path('SLCOverrideMode')).write_bytes(b'9')
+    repair = required_change(self._row('slc', 'SLCOverrideMode'))
+    self.assertEqual(repair.value, choices[0])
+    self.assertFalse(self.owner.apply(replace(repair, value=choices[2])))
+    self.assertTrue(self.owner.apply(repair))
+    self.assertEqual(self.params.get('SLCOverrideMode'), 0)
+
+  def test_wheel_override_is_off_and_only_configurable_for_software_set(self):
+    from opendbc.car.structs import car
+    cp = car.CarParams(carFingerprint=self.fingerprint, openpilotLongitudinalControl=True, pcmCruise=False)
+    self.owner.vehicle_params = lambda: cp
+    self.params.put_bool('SpeedLimitController', True, block=True)
+    row = self._row('slc', 'SLCWheelOverride')
+    self.assertEqual((row.label, row.value, row.default_value), ('Override speed limit with +', 'Off', 'Off'))
+    request = required_change(row)
+    cp.pcmCruise = True
+    self.assertFalse(self.owner.apply(request))
+    cp.pcmCruise = False
+    self.params.put_bool('SpeedLimitController', False, block=True)
+    self.assertFalse(self.owner.apply(request))
+    self.params.put_bool('SpeedLimitController', True, block=True)
     self.assertTrue(self.owner.apply(request))
-    self.assertEqual(self.params.get('SLCOverrideMode'), 2)
-    self.assertEqual(self._row('slc', 'SLCOverrideMode').value, 'Use Set Speed')
+    self.assertTrue(self.params.get_bool('SLCWheelOverride'))
 
   def test_limit_sign_preference_needs_parked_authority_not_long_control_or_vehicle(self):
     self.fingerprint = None

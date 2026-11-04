@@ -43,6 +43,9 @@ class SlcConsumedButton:
   button: str
 
 
+SlcWheelContext = tuple[str, int]
+
+
 def validated_initial_cruise_speed(value: object) -> int:
   if type(value) is int and V_CRUISE_INITIAL <= value <= V_CRUISE_MAX:
     return value
@@ -70,18 +73,22 @@ class VCruiseHelper:
     self.slc_consumed_button: SlcConsumedButton | None = None
     self.slc_suppressed_buttons: set[ButtonType] = set()
     self.slc_released_suppressed = False
+    self.slc_wheel_press: SlcWheelContext | None = None
+    self.slc_wheel_tap: SlcWheelContext | None = None
 
   @property
   def v_cruise_initialized(self):
     return self.v_cruise_kph != V_CRUISE_UNSET
 
-  def update_v_cruise(self, CS, enabled, is_metric, slc_pending: SlcPendingConfirmation | None = None, *, slc_enabled: bool = False):
+  def update_v_cruise(self, CS, enabled, is_metric, slc_pending: SlcPendingConfirmation | None = None, *,
+                      slc_enabled: bool = False, wheel_context: SlcWheelContext | None = None):
     from opendbc.car.subaru.software_cruise import selected as subaru_software_selected
     subaru_software = subaru_software_selected(self.CP)
     software_cruise = not self.CP.pcmCruise or subaru_software
     self.slc_cruise_change = None
     self.slc_consumed_button = None
     self.slc_released_suppressed = False
+    self.slc_wheel_tap = None
     self.v_cruise_kph_last = self.v_cruise_kph
     now_ns = monotonic_ns()
     if not CS.cruiseState.available or now_ns - self.pending_resume_ns > 500_000_000:
@@ -96,6 +103,16 @@ class VCruiseHelper:
 
     if software_cruise or slc_enabled and self.CP.openpilotLongitudinalControl or self.slc_suppressed_buttons:
       self._update_slc_button_latches(CS, enabled, slc_pending)
+
+    if (not slc_enabled or not enabled or self.CP.pcmCruise or slc_pending is not None or
+        not CS.cruiseState.available or ButtonType.accelCruise in self.slc_suppressed_buttons):
+      wheel_context = None
+    if wheel_context != self.slc_wheel_press:
+      self.slc_wheel_press = None
+    if wheel_context is not None and self.button_timers[ButtonType.accelCruise] == 0:
+      pressed = {b.type.raw for b in CS.buttonEvents if b.pressed}
+      if ButtonType.accelCruise in pressed and ButtonType.resumeCruise not in pressed:
+        self.slc_wheel_press = wheel_context
 
     if CS.cruiseState.available:
       if software_cruise:
@@ -122,6 +139,8 @@ class VCruiseHelper:
       self.pcm_slc_button = ButtonType.unknown
       if software_cruise:
         self.update_button_timers(CS, enabled)
+    if self.button_timers[ButtonType.accelCruise] == 0:
+      self.slc_wheel_press = None
 
   def _update_toyota_pcm_slc_change(self, CS, enabled: bool, now_ns: int) -> None:
     """Observe a physical PCM speed change without writing stock selected speed."""
@@ -211,7 +230,9 @@ class VCruiseHelper:
     if not self.button_change_states[button_type]["enabled"]:
       return
 
-    self.adjust_v_cruise(button_type, CS, is_metric, long_press=long_press)
+    changed = self.adjust_v_cruise(button_type, CS, is_metric, long_press=long_press)
+    if changed and button_type == ButtonType.accelCruise and not long_press and self.button_timers[button_type] > 0:
+      self.slc_wheel_tap = self.slc_wheel_press
 
   def adjust_v_cruise(self, button_type, CS, is_metric: bool, *, long_press: bool = False) -> bool:
     """Apply the normal software cruise step without synthesizing button events."""

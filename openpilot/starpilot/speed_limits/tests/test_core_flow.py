@@ -71,6 +71,147 @@ def test_cruise_adjustments_change_only_the_driver_ceiling(drive, selected):
   assert sm['carState'].vCruise == selected
 
 
+def wheel_crossing(drive, *, metric=True, enabled=True, previous_kph=90., selected_kph=91., offset=0.):
+  sm, cp = drive
+  cp.pcmCruise = False
+  car_state = sm['carState']
+  car_state.canValid = True
+  car_state.vCruise = car_state.vCruiseCluster = previous_kph
+  settings = replace(controller(offset).settings, wheel_override=enabled)
+  runtime = Runtime(settings, is_metric=metric)
+  first = tick(runtime, sm, cp, 0).message.slcState
+  car_state.vCruise = car_state.vCruiseCluster = selected_kph
+  event = CruiseEvent(1, START + 50_000_000, previous_kph / 3.6, selected_kph / 3.6, 'accel',
+                      'card-producer', START + 50_000_000, session_id=runtime.session_id,
+                      wheel_override_since_ns=first.wheelOverrideSince)
+  return runtime, event
+
+
+@pytest.mark.parametrize('metric,previous_kph,selected_kph,limit,offset', [
+  (True, 90., 91., 25., 0.),
+  (True, 54.5, 55.5, 54. / 3.6, 0.),
+  (False, 89., 90.6, 55. * CV.MPH_TO_MS, 0.),
+  (False, 86.9, 88.5, 55. * CV.MPH_TO_MS, -.5 * CV.MPH_TO_MS),
+])
+def test_wheel_tap_crosses_displayed_limit_and_uses_native_set(drive, metric, previous_kph, selected_kph, limit, offset):
+  from struct import pack, unpack
+  sm, cp = drive
+  sm['slcDashboardObservation'].speedMps = limit
+  sm['carState'].vEgoCluster += 1.0
+  runtime, event = wheel_crossing(drive, metric=metric, previous_kph=previous_kph, selected_kph=selected_kph, offset=offset)
+  event = replace(event, previous_mps=unpack('f', pack('f', event.previous_mps))[0])
+  assert event.wheel_override_since_ns == START
+  # Card publishes carState before the event. The new SET can be sampled first.
+  assert tick(runtime, sm, cp, 1).result.ceiling is not None
+  crossed = tick(runtime, sm, cp, 2, cruise_event=event)
+  status = crossed.message.slcState
+  assert crossed.result.ceiling is None and status.driverOverrideActive and status.overrideBasis == 'wheel'
+  assert status.effectiveClusterTarget == pytest.approx(selected_kph / 3.6)
+  assert not status.isLimitingMaxSet
+  planner = LongitudinalPlanner(cp)
+  planner.update(sm, cruise_ceiling=crossed.result.ceiling)
+  assert planner.last_cruise_ceiling_status == 'absent'
+
+  sm['carState'].vCruise = sm['carState'].vCruiseCluster = previous_kph
+  lowered = tick(runtime, sm, cp, 3)
+  assert lowered.result.ceiling is not None and not lowered.message.slcState.driverOverrideActive
+  sm['carState'].vCruise = sm['carState'].vCruiseCluster = selected_kph
+  assert not tick(runtime, sm, cp, 4, cruise_event=event).message.slcState.driverOverrideActive
+
+
+@pytest.mark.parametrize('scenario', ['off', 'already above', 'controller', 'hold', 'foreign producer', 'foreign session',
+                                      'different SET', 'stop or curve', 'confirmation', 'new limit', 'disengaged', 'pcm',
+                                      'standstill', 'units changed'])
+def test_wheel_override_requires_current_unconsumed_physical_crossing(drive, scenario):
+  sm, cp = drive
+  prior, selected = (100., 101.) if scenario == 'already above' else (90., 91.)
+  runtime, event = wheel_crossing(drive, enabled=scenario != 'off', previous_kph=prior, selected_kph=selected)
+  changes = {
+    'controller': {'wheel_override_since_ns': 0},
+    'hold': {'long_press': True},
+    'foreign producer': {'producer_session': 'old-card'},
+    'foreign session': {'session_id': 'old-slc'},
+    'different SET': {'selected_mps': event.selected_mps - .05},
+  }
+  event = replace(event, **changes.get(scenario, {}))
+  if scenario in ('confirmation', 'new limit'):
+    sm['slcDashboardObservation'].speedMps = 23.
+    if scenario == 'confirmation':
+      runtime.settings = replace(runtime.settings, acceptance=acc.Policy(confirm_lower=True))
+  if scenario == 'disengaged':
+    sm['carControl'].enabled = sm['carControl'].longActive = sm['selfdriveState'].enabled = False
+  if scenario == 'pcm':
+    cp.pcmCruise = True
+  if scenario == 'standstill':
+    sm['carState'].standstill = True
+  if scenario == 'units changed':
+    runtime.update_offsets(runtime.settings.offsets, is_metric=False)
+  output = tick(runtime, sm, cp, 1, cruise_event=event, wheel_override_blocked=scenario == 'stop or curve')
+  assert not output.message.slcState.driverOverrideActive
+  if scenario in ('stop or curve', 'standstill'):
+    assert output.message.slcState.wheelOverrideSince == 0
+    sm['carState'].standstill = False
+    assert not tick(runtime, sm, cp, 2, cruise_event=replace(event, event_id=2)).message.slcState.driverOverrideActive
+
+
+@pytest.mark.parametrize('limit_kph', [51., 90.])
+def test_wheel_override_survives_units_change_until_set_returns_to_limit(drive, limit_kph):
+  sm, cp = drive
+  sm['slcDashboardObservation'].speedMps = limit_kph / 3.6
+  runtime, event = wheel_crossing(drive, previous_kph=limit_kph, selected_kph=limit_kph + 1.)
+  assert tick(runtime, sm, cp, 1, cruise_event=event).message.slcState.overrideBasis == 'wheel'
+
+  # At 51 km/h both speeds round to 32 mph, even though SET remains higher.
+  runtime.update_offsets(runtime.settings.offsets, is_metric=False)
+  changed = tick(runtime, sm, cp, 2)
+  assert changed.result.ceiling is None
+  assert changed.message.slcState.overrideBasis == 'wheel'
+  assert changed.message.slcState.wheelOverrideSince != event.wheel_override_since_ns
+
+  sm['carState'].vCruise = sm['carState'].vCruiseCluster = limit_kph
+  returned = tick(runtime, sm, cp, 3)
+  assert returned.result.ceiling.speed_mps == pytest.approx(limit_kph / 3.6)
+  assert not returned.message.slcState.driverOverrideActive
+
+
+@pytest.mark.parametrize('cruise_standstill', [False, True])
+def test_wheel_override_survives_engaged_stop(drive, cruise_standstill):
+  sm, cp = drive
+  runtime, event = wheel_crossing(drive)
+  assert tick(runtime, sm, cp, 1, cruise_event=event).message.slcState.overrideBasis == 'wheel'
+
+  stopped = sm['carState'].cruiseState if cruise_standstill else sm['carState']
+  stopped.standstill = True
+  sm['carState'].vEgo = sm['carState'].vEgoCluster = 0.
+  sm['controlsState'].longControlState = 'stopping'
+  held = tick(runtime, sm, cp, 2)
+  assert held.message.slcState.overrideBasis == 'wheel'
+  assert held.message.slcState.wheelOverrideSince == 0
+
+  stopped.standstill = False
+  sm['controlsState'].longControlState = 'pid'
+  assert tick(runtime, sm, cp, 3).message.slcState.overrideBasis == 'wheel'
+
+
+def test_wheel_override_survives_gas_handoff_without_latching_pedal_speed(drive):
+  sm, cp = drive
+  runtime, event = wheel_crossing(drive)
+  assert tick(runtime, sm, cp, 1, cruise_event=event).message.slcState.overrideBasis == 'wheel'
+  sm['carState'].vEgo = sm['carState'].vEgoCluster = 91. / 3.6
+  sm['carState'].gasPressed = True
+  sm['carControl'].longActive = False
+  sm['controlsState'].longControlState = 'off'
+  assert tick(runtime, sm, cp, 2).result.state.pedal_target_mps == 0.
+  sm['carState'].gasPressed = False
+  assert tick(runtime, sm, cp, 3).result.state.wheel_override_metric is True
+  sm['carControl'].longActive = True
+  sm['controlsState'].longControlState = 'pid'
+  assert tick(runtime, sm, cp, 4).message.slcState.overrideBasis == 'wheel'
+  sm['slcDashboardObservation'].speedMps = 23.
+  accepted = tick(runtime, sm, cp, 5)
+  assert accepted.result.ceiling.speed_mps == 23. and not accepted.message.slcState.driverOverrideActive
+
+
 @pytest.mark.parametrize('missing', ['absent', 'unknown', 'stale'])
 def test_source_gap_uses_the_previous_limit_and_current_offset(drive, missing):
   sm, cp = drive

@@ -176,9 +176,8 @@ cap while renewing pending actions. Disabling SLC still clears that constraint.
 
 ## SET speed and accelerator
 
-Ordinary cruise +/- changes the driver's maximum; it does not bypass SLC or cross
-out the sign. Confirmation presses remain consumed through hold and release and
-do not also apply a software cruise step. Native PCM button effects remain native;
+Cruise + and − change SET. Confirmation presses remain consumed through hold and
+release and do not also apply a software cruise step. Native PCM button effects remain native;
 StarPilot does not pretend it can suppress the vehicle's own SET adjustment.
 Native standstill RES takes precedence over confirmation.
 
@@ -188,15 +187,22 @@ Subaru software-cruise mode remains independent of SLC.
 The Volt conventional-cruise controller uses the fresh SLC cap beneath SET for its
 cruise-button speed boundary, with its existing physical-source and timing checks.
 
-**Gas pedal override** defaults to **Hold Reached Speed**. Pressing the gas
-above the accepted limit plus offset lets cruise hold the fastest speed you reach,
-up to SET. **Use Set Speed** uses SET as the override target. **Off** returns
-to the accepted limit on release. The override clears when cruise disengages,
+**After an accelerator override** defaults to **Hold the speed you reached**. Pressing
+the gas above the accepted limit plus offset lets cruise hold the fastest speed you
+reach, up to SET. **Use your SET speed** targets SET. **Resume the adjusted limit**
+returns to the accepted limit plus offset on release. The override clears when cruise disengages,
 the adjusted limit catches up, or the driver explicitly accepts or adopts a limit.
 After an explicit choice, the current accelerator press cannot start another
 override. Releasing and pressing again can start one.
 SET and the accepted limit are separate from the override. Lead, curve and
 stopping constraints still apply.
+
+**Override speed limit with +** defaults to Off and is available when StarPilot
+owns SET. A tap must move the displayed SET from at or below the adjusted limit
+to above it. Cruise then uses SET until it returns to the adjusted limit, a different
+limit is accepted, or engagement ends. A display-unit change or a stop while
+cruise stays engaged preserves an active override. Confirmation, Curve Speed and
+Force Stop take priority over this gesture.
 
 The configured wheel action can explicitly adopt the displayed current limit. It
 updates SLC acceptance, not SET. The onroad screen adds no new control.

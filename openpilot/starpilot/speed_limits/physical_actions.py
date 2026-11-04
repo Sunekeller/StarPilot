@@ -3,9 +3,10 @@
 import math
 
 from openpilot.cereal.services import SERVICE_LIST
-from openpilot.selfdrive.car.cruise import SlcPendingConfirmation, V_CRUISE_MIN, V_CRUISE_MAX
+from openpilot.selfdrive.car.cruise import SlcPendingConfirmation, SlcWheelContext, V_CRUISE_MIN, V_CRUISE_MAX
 from openpilot.starpilot.speed_limits.acceptance import CONFIRMATION_NS
 from openpilot.starpilot.speed_limits.selection import Source
+from openpilot.starpilot.speed_limits.speed_domain import set_above_limit
 
 
 STATE_MAX_AGE_NS = int(2e9 / SERVICE_LIST['slcState'].frequency)
@@ -65,6 +66,17 @@ def active_ceiling(sm, now_ns: int, *, after_ns: int = 0) -> float | None:
     return None
   cap = float(state.effectiveCap)
   return cap if finite_speed(cap) and cap <= V_CRUISE_MAX / 3.6 + 1e-5 else None
+
+
+def wheel_override_context(sm, now_ns: int, *, selected_kph: float, is_metric: bool,
+                           after_ns: int = 0) -> SlcWheelContext | None:
+  state = _state(sm, now_ns)
+  if (state is None or int(state.frameMonoTime) <= after_ns or not state.hasAcceptedAdjustedLimit or
+      not finite_speed(state.acceptedAdjustedLimit) or not V_CRUISE_MIN <= selected_kph <= V_CRUISE_MAX or
+      set_above_limit(selected_kph / 3.6, float(state.acceptedAdjustedLimit), is_metric)):
+    return None
+  since = int(state.wheelOverrideSince)
+  return (str(state.sessionId), since) if 0 < since <= int(state.frameMonoTime) else None
 
 
 def engagement_state(sm, observation, producer_session: str, now_ns: int, *, after_ns: int = 0):

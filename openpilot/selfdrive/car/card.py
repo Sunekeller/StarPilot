@@ -31,7 +31,7 @@ from opendbc.car.hyundai.ioniq6_media import Ioniq6MediaButtons
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
-from openpilot.selfdrive.car.cruise import VCruiseHelper
+from openpilot.selfdrive.car.cruise import SlcWheelContext, VCruiseHelper
 from openpilot.starpilot.speed_limits import physical_actions as slc_physical
 from openpilot.starpilot.aol.intent import AolProcessFaultContext, independent_axis_requested, read_settings
 from openpilot.starpilot.aol.transport_pause import TransportPauseFeedback, cp_identity
@@ -573,7 +573,15 @@ class Car:
     if self.slc_replay:
       pending = slc_physical.pending_confirmation(
         self.sm, now_ns, long_active=slc_long_active, after_ns=floor_ns)
-    self.update_cruise_speed(CS, pending)
+    wheel_context = None
+    slc_settings = getattr(self, 'slc_configuration', (False, None))[1]
+    cruise_helper = self.v_cruise_helper
+    if (self.slc_replay and getattr(slc_settings, 'wheel_override', False) and host_long_active and can_rcv_valid and
+        not self.CP.pcmCruise and pending is None and (cruise_helper.slc_wheel_press is not None or len(CS.buttonEvents) > 0) and
+        not (CS.brakePressed or CS.gasPressed or CS.standstill or CS.cruiseState.standstill)):
+      wheel_context = slc_physical.wheel_override_context(self.sm, now_ns, after_ns=floor_ns,
+        selected_kph=cruise_helper.v_cruise_kph, is_metric=self.is_metric)
+    self.update_cruise_speed(CS, pending, wheel_context=wheel_context)
     if self.controller_cruise_sock is not None:
       for _ in range(8):
         request = messaging.recv_one_or_none(self.controller_cruise_sock)
@@ -788,9 +796,10 @@ class Car:
 
     return CS, RD
 
-  def update_cruise_speed(self, CS, pending=None):
+  def update_cruise_speed(self, CS, pending=None, *, wheel_context: SlcWheelContext | None = None):
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric, pending,
-                                       slc_enabled=getattr(self, 'slc_control_enabled', getattr(self, 'slc_replay', False)))
+                                       slc_enabled=getattr(self, 'slc_control_enabled', getattr(self, 'slc_replay', False)),
+                                       wheel_context=wheel_context)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       target, initial = None, None
       now_ns = int(self.can_log_mono_time) if REPLAY and hasattr(self, 'can_log_mono_time') else time.monotonic_ns()
@@ -1123,6 +1132,8 @@ class Car:
         if kind == 'driverChange':
           assert isinstance(detail, tuple) and len(detail) == 4
           record.button, record.longPress = detail[2], detail[3]
+          if self.v_cruise_helper.slc_wheel_tap is not None:
+            record.sessionId, record.wheelOverrideSince = self.v_cruise_helper.slc_wheel_tap
         elif kind in ('confirmationAccept', 'confirmationReject'):
           record.button = detail.button
           record.sessionId = detail.pending.session_id

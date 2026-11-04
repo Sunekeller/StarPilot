@@ -39,7 +39,7 @@ from openpilot.starpilot.ui.feature_settings_state import (
 from openpilot.starpilot.speed_limits.offset_document import MPH_TO_MPS
 from openpilot.starpilot.speed_limits.runtime_settings import (
   ADVANCE_BYTES, ADVANCE_KEYS, CONFIRMATION_CHOICES,
-  PEDAL_OVERRIDE_BYTES, PEDAL_OVERRIDE_CHOICES, PEDAL_OVERRIDE_KEY, SOURCE_PRIORITY_KEYS,
+  PEDAL_OVERRIDE_BYTES, PEDAL_OVERRIDE_CHOICES, PEDAL_OVERRIDE_KEY, SOURCE_PRIORITY_KEYS, WHEEL_OVERRIDE_KEY, PedalOverride,
 )
 from openpilot.starpilot.aol.vehicle import policy_for as aol_policy_for
 from openpilot.starpilot.feature_capabilities import longitudinal_supported as feature_longitudinal_supported
@@ -92,6 +92,7 @@ BOOL_DEFAULTS = {
   "RemapCancelToDistance": False, "LongPitch": True, "DisableOpenpilotLongitudinal": False,
   "SpeedLimitController": False, "ShowSpeedLimits": True,
   "SLCOnEngage": False,
+  WHEEL_OVERRIDE_KEY: False,
   "PauseLateralOnSignal": False,
   "LaneCentering": True, "LaneCenteringPauseOnSignal": True,
   "CustomPersonalities": False, PLANNER_SELECTION_KEY: True,
@@ -1129,6 +1130,9 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row("ShowSpeedLimits", "Show speed limit signs", self.authority("preferences"),
                                  reason="Display signs independently of Speed Limit Controller; does not change cruise speed"))
       rows.extend(policy_rows(self._value, self._readable, allowed=allowed))
+      if cp is not None and not cp.pcmCruise:
+        rows.append(self._bool_row(WHEEL_OVERRIDE_KEY, "Override speed limit with +", allowed and control == "1",
+                                   reason="Press + to raise SET past the adjusted limit and use your new SET speed."))
       source_capability = self._source_capability()
       vision_dev, maps_available = source_capability
       source_allowed = configurable and self.authority("preferences")
@@ -1633,7 +1637,7 @@ class FeatureSettingsOwner:
         encoded = str(SLC_ADVANCE_CHOICES.index(request.value))
       elif key == PEDAL_OVERRIDE_KEY:
         if request.value not in PEDAL_OVERRIDE_CHOICES or (
-            request.value != 'Off' and request.expected not in (None, *PEDAL_OVERRIDE_BYTES)):
+            request.value != PEDAL_OVERRIDE_CHOICES[PedalOverride.OFF] and request.expected not in (None, *PEDAL_OVERRIDE_BYTES)):
           return False
         encoded = PEDAL_OVERRIDE_CHOICES.index(request.value)
       elif key in BOOL_DEFAULTS:
@@ -1642,7 +1646,7 @@ class FeatureSettingsOwner:
           return False
         if key == "SpeedLimitController" and request.value == "On" and not self.slc_offsets.ready_to_enable():
           return False
-        if key == "SLCOnEngage":
+        if key in ("SLCOnEngage", WHEEL_OVERRIDE_KEY):
           cp = self.vehicle_params()
           if cp is None or cp.pcmCruise or not self.longitudinal_available() or (
               request.value == "On" and self._raw("SpeedLimitController") != b"1"):

@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal.services import SERVICE_LIST
+from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX
 from openpilot.starpilot.aol.runtime import current_axis
 from openpilot.starpilot.speed_limits import acceptance as acc
 from openpilot.starpilot.speed_limits import action_arbitration as arb
@@ -100,6 +101,8 @@ class CruiseEvent:
   decision_id: int = 0
   presentation_id: int = 0
   command_id: int = 0
+  wheel_override_since_ns: int = 0
+  long_press: bool = False
 
 
 @dataclass(frozen=True)
@@ -175,7 +178,7 @@ class Runtime:
     acceptance = replace(self.state.acceptance, observation=acc.Observation(acc.ObservationKind.UNKNOWN),
                          pending=None, presentation=None, timer_running=False)
     self.current_presentation = None
-    self.state = replace(self.state, acceptance=acceptance)
+    self.state = replace(self.state, acceptance=acceptance, wheel_override_since_ns=0)
     self._ui_receipt = None
 
   def update_advance(self, higher_seconds: int, lower_seconds: int) -> None:
@@ -327,7 +330,7 @@ class Runtime:
     return values
 
   def _frame(self, sm, CP, now_ns: int, now_boot_ns: int | None, action: acc.DriverAction | None, adopt: acc.AdoptRequest | None,
-             classified: arb.Result | None) -> comp.Frame:
+             classified: arb.Result | None, *, wheel_override_blocked: bool) -> comp.Frame:
     car_fresh = _fresh(sm, "carState", now_ns) and not sm["carState"].canTimeout
     controls_fresh = _fresh(sm, "controlsState", now_ns)
     selfdrive_fresh = _fresh(sm, "selfdriveState", now_ns)
@@ -353,11 +356,16 @@ class Runtime:
     host = comp.HostState(bool(CP.openpilotLongitudinalControl), host_long, bool(selfdrive.enabled and selfdrive_fresh),
                           bool(controls.forceDecel) if controls_fresh else True, selected, selected_cluster)
     observations = self._observations(sm, CP, now_ns, now_boot_ns)
+    wheel_enabled = (self.settings.wheel_override and not CP.pcmCruise and car_fresh and car_state.canValid and
+                     V_CRUISE_MIN <= selected <= V_CRUISE_MAX and selected_cluster == selected and
+                     not car_state.brakePressed)
+    wheel_blocked = wheel_override_blocked or car_state.standstill or car_state.cruiseState.standstill
     frame = comp.Frame(now_ns, observations, self.settings.selection, authority,
                       self.settings.acceptance, self.settings.offsets,
                       sd.DomainStatus.VALID if car_fresh and selected_cluster is not None else sd.DomainStatus.STALE,
                       ego, bool(car_state.gasPressed) if car_fresh else False, host, action=action, adopt=adopt,
-                      classified_cruise=classified, is_metric=self.is_metric, pedal_override=self.settings.pedal_override)
+                      classified_cruise=classified, is_metric=self.is_metric, pedal_override=self.settings.pedal_override,
+                      wheel_override_enabled=wheel_enabled, wheel_override_blocked=wheel_blocked)
     maps_selected = self._maps_selected
     encounter = self.advance.encounter
     if not maps_selected and encounter is None:
@@ -432,7 +440,7 @@ class Runtime:
     return acc.DriverAction(self.session_id, action_id, request.decision_id, kind, request.observed_ns), None, action_id
 
   def step(self, sm, CP, *, now_ns: int, now_boot_ns: int | None = None, request: Action | None = None,
-           cruise_event: CruiseEvent | None = None, confirmation_grace_ns: int = 0) -> Output:
+           cruise_event: CruiseEvent | None = None, confirmation_grace_ns: int = 0, wheel_override_blocked: bool = False) -> Output:
     classified = self._cruise(cruise_event, sm, now_ns) if request is None else None
     action, adopt, action_id = self._action(request, now_ns)
     if cruise_event is not None and request is None:
@@ -444,8 +452,16 @@ class Runtime:
       adopt = replace(adopt, candidate=shown.candidate)
       self.state = replace(self.state, acceptance=replace(self.state.acceptance, presentation=shown, pending=None, timer_running=False,
         observation=acc.Observation(acc.ObservationKind.VALID, shown.candidate)))
-    frame = replace(self._frame(sm, CP, now_ns, now_boot_ns, action, adopt, classified),
-                    confirmation_grace_ns=confirmation_grace_ns)
+    wheel_since = 0
+    if (classified is not None and cruise_event is not None and cruise_event.button == 'accel' and
+        not cruise_event.long_press and cruise_event.selected_mps > cruise_event.previous_mps and
+        abs(float(sm['carState'].vCruise) / 3.6 - cruise_event.selected_mps) <= 0.0001 and
+        0 < cruise_event.wheel_override_since_ns <= cruise_event.observed_ns and cruise_event.session_id == self.session_id and
+        _fresh(sm, 'slcDashboardObservation', now_ns) and
+        cruise_event.producer_session == str(sm['slcDashboardObservation'].producerSessionId)):
+      wheel_since = cruise_event.wheel_override_since_ns
+    frame = self._frame(sm, CP, now_ns, now_boot_ns, action, adopt, classified, wheel_override_blocked=wheel_override_blocked)
+    frame = replace(frame, confirmation_grace_ns=confirmation_grace_ns, wheel_override_since_ns=wheel_since)
     result = comp.step(self.state, frame)
     self.state = result.state
     self.advance.observe(result)
@@ -541,8 +557,11 @@ class Runtime:
       state.decisionId = pending.decision_id
       state.automaticAdoptionPending = pending.automatic
       state.pendingSinceMonoTime = now_ns - pending.active_elapsed_ns
-    state.driverOverrideActive = result.ceiling is not None and result.state.pedal_target_mps > 0.
-    state.overrideBasis = ('pedal' if frame.pedal_pressed else 'persistent') if state.driverOverrideActive else 'none'
+    wheel_active = result.coordinate is not None and result.coordinate.basis == 'wheel'
+    state.wheelOverrideSince = result.state.wheel_override_since_ns if not result.errors else 0
+    state.driverOverrideActive = wheel_active or result.ceiling is not None and result.state.pedal_target_mps > 0.
+    state.overrideBasis = 'wheel' if wheel_active else (
+      ('pedal' if frame.pedal_pressed else 'persistent') if state.driverOverrideActive else 'none')
     shown = result.state.acceptance.presentation
     ego = frame.ego_pair
     ego_delta = (max(0.0, ego.cluster_mps - ego.raw_mps)

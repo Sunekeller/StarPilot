@@ -524,6 +524,68 @@ class RuntimeReplayTests(unittest.TestCase):
           self.assertEqual(result.message.slcState.actionStatus, outcome)
 
 
+  def test_physical_wheel_override_receipt_through_card_and_planner_queue(self):
+    from openpilot.cereal import messaging
+    from openpilot.selfdrive.car import card
+    from openpilot.selfdrive.controls.plannerd import current_cruise_event, queue_cruise_event, wheel_override_blocked
+    from openpilot.starpilot.curve_speed.host import CurveHost
+
+    self.cp.pcmCruise = False
+    self.sm['carState'].canValid = True
+    self.sm['carState'].vCruise = self.sm['carState'].vCruiseCluster = 90.
+    settings = parse({'SpeedLimitController': True, 'SLCPriority1': 'Dashboard', 'SLCWheelOverride': True})
+    for curve_claims, curve_backlog in ((False, False), (True, False), (False, True)):
+      with self.subTest(curve_claims=curve_claims, curve_backlog=curve_backlog):
+        start = 2_000_000_000
+        self.sm.advance(start)
+        self.sm['carState'].vCruise = self.sm['carState'].vCruiseCluster = 90.
+        runtime = Runtime(settings, is_metric=True)
+        state = runtime.step(self.sm, self.cp, now_ns=start).message.slcState
+        fake, current_cs = self._card_with_slc_state(state, None, start)
+        fake.slc_configuration = fake.slc_requested_configuration = (True, settings)
+        fake.v_cruise_helper.v_cruise_kph = fake.v_cruise_helper.v_cruise_cluster_kph = 90.
+        fake.is_metric = True
+        fake.curve_replay = True
+        fake.car_params_published = True
+        fake.sm.frame = 1
+        fake.sm.all_checks = lambda services: True
+        fake.last_actuators_output = car.CarControl.Actuators()
+        fake.slc_cruise_event_id = 0
+        fake.radar_publish = mock.Mock()
+        fake.rk = SimpleNamespace(remaining=0.0)
+        fake.aol_replay = False
+        clock = [start + 10_000_000]
+
+        def can_batch(*args, clock=clock, **kwargs):
+          return [messaging.new_message('can', size=0, logMonoTime=clock[0]).to_bytes()]
+
+        with (mock.patch.object(card, 'REPLAY', True),
+              mock.patch.object(card.messaging, 'drain_sock_raw', side_effect=can_batch)):
+          for pressed in (True, False):
+            current_cs[0] = car.CarState(canValid=True, cruiseState={'available': True},
+                                        buttonEvents=[car.CarState.ButtonEvent(type='accelCruise', pressed=pressed)])
+            cs, radar = fake.state_update()
+            fake.state_publish(cs, radar)
+            clock[0] += 10_000_000
+            fake.sm.logMonoTime['carControl'] = clock[0]
+        slc_events, curve_events = deque(), deque()
+        for call in fake.pm.send.call_args_list:
+          name, message = call.args
+          if name == 'slcCruiseEvent':
+            queue_cruise_event(messaging.log_from_bytes(message.to_bytes()), slc_events, curve_events)
+        self.assertEqual(len(curve_events), 1)
+        self.assertEqual(len(slc_events), 1)
+        self.assertEqual(cs.vCruise, 91.)
+        self.sm['carState'].vCruise = self.sm['carState'].vCruiseCluster = cs.vCruise
+        self.sm.advance(clock[0])
+        event = current_cruise_event(slc_events, clock[0])
+        self.assertEqual(event.wheel_override_since_ns, start)
+        curve = CurveHost()
+        curve.runtime.was_controlling = curve_claims
+        output = runtime.step(self.sm, self.cp, now_ns=clock[0], cruise_event=event,
+                              wheel_override_blocked=wheel_override_blocked(None, curve, curve_backlog=curve_backlog))
+        self.assertEqual(output.message.slcState.driverOverrideActive, not (curve_claims or curve_backlog))
+
   def test_malformed_saved_priorities_disable_runtime_without_crashing(self):
     for key in ('SLCPriority1', 'SLCPriority2'):
       for malformed in ([], {}, 1, None):

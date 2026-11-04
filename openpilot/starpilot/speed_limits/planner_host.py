@@ -69,6 +69,8 @@ class SavedSlcLifecycle:
       if (settings.advance_higher_seconds != self.runtime.settings.advance_higher_seconds or
           settings.advance_lower_seconds != self.runtime.settings.advance_lower_seconds):
         self.runtime.update_advance(settings.advance_higher_seconds, settings.advance_lower_seconds)
+      if settings.wheel_override != self.runtime.settings.wheel_override:
+        self.runtime.state = replace(self.runtime.state, wheel_override_metric=None, wheel_override_since_ns=0)
       self.runtime.settings = settings
       self.runtime.vision_enabled = vision
       self.runtime.vision_control_qualified = vision and configuration[3]
@@ -90,7 +92,7 @@ class SavedSlcLifecycle:
       pending_cruise.clear()
     return self.runtime, True
 
-  def step(self, sm, now_ns, pending_actions, pending_cruise, *, drive_changed):
+  def step(self, sm, now_ns, pending_actions, pending_cruise, *, drive_changed, wheel_override_blocked=False):
     runtime = self.runtime
     if runtime is None:
       return None
@@ -105,7 +107,7 @@ class SavedSlcLifecycle:
                pending_actions[0][0] <= now_ns else None)
     previous_accepted = runtime.history_limit
     output = runtime.step(sm, self.cp, now_ns=now_ns, request=request, cruise_event=cruise_event,
-                          confirmation_grace_ns=ACTION_MAX_AGE_NS)
+                          confirmation_grace_ns=ACTION_MAX_AGE_NS, wheel_override_blocked=wheel_override_blocked)
     accepted = runtime.history_limit
     if accepted != previous_accepted:
       self.params.put("SLCQualifiedHistory", json.loads(history.encode(accepted, time.time_ns())) if accepted is not None else {})
@@ -125,7 +127,7 @@ def cruise_event_from_message(event):
   return CruiseEvent(int(cruise.eventId), int(cruise.observedMonoTime), float(cruise.previousMps),
                      float(cruise.selectedMps), str(cruise.button), str(cruise.producerSessionId),
                      int(event.logMonoTime), str(cruise.kind), str(cruise.sessionId), int(cruise.decisionId),
-                     int(cruise.presentationId), int(cruise.commandId))
+                     int(cruise.presentationId), int(cruise.commandId), int(cruise.wheelOverrideSince), bool(cruise.longPress))
 
 
 def action_from_message(event):

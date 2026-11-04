@@ -5,6 +5,7 @@ import struct
 from dataclasses import dataclass
 from enum import Enum
 
+from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX, slc_target_kph
 from openpilot.starpilot.speed_limits import acceptance as acc
 
@@ -163,6 +164,15 @@ def set_speed_matches(target_mps: float, raw_kph: float, cluster_kph: float | No
   target_kph = slc_target_kph(target_mps, is_metric)
   return (math.isclose(target_kph, raw_kph, rel_tol=0, abs_tol=0.001) and
           math.isclose(target_kph, cluster_kph, rel_tol=0, abs_tol=0.001))
+
+
+def set_above_limit(selected_mps: float, adjusted_limit_mps: float, is_metric: bool) -> bool:
+  # Use the sign's wire precision and restore software SET's 0.1 km/h after transport.
+  limit_mps = struct.unpack('f', struct.pack('f', adjusted_limit_mps))[0]
+  selected_kph = round(selected_mps * CV.MS_TO_KPH, 1)
+  if is_metric:
+    return round(selected_kph) > round(limit_mps * CV.MS_TO_KPH)
+  return round(selected_kph * CV.KPH_TO_MPH) > round(limit_mps * CV.MS_TO_MPH)
 
 
 def resolve(decision: acc.Decision, schedule: OffsetSchedule, selected: SpeedPair, ego: SpeedPair) -> DomainResolution:

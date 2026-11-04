@@ -26,12 +26,13 @@ def policy_rows(read_value, readable, *, allowed):
       reason=f'Offer or adopt {direction} mapped limits this many seconds early at the current speed'
         if valid_advance else 'Invalid saved advance time; restore Off'))
   _, raw_override, readable_override = read_value(PEDAL_OVERRIDE_KEY)
+  resume_limit = PEDAL_OVERRIDE_CHOICES[PedalOverride.OFF]
   default_override = PEDAL_OVERRIDE_CHOICES[PedalOverride.SPEED_REACHED]
   valid_override = readable_override and (raw_override is None or raw_override in PEDAL_OVERRIDE_BYTES)
-  rows.append(FeatureRow(PEDAL_OVERRIDE_KEY, 'Gas pedal override',
+  rows.append(FeatureRow(PEDAL_OVERRIDE_KEY, 'After an accelerator override',
     default_override if raw_override is None else PEDAL_OVERRIDE_CHOICES[int(raw_override)] if valid_override else 'Invalid',
-    raw_override, PEDAL_OVERRIDE_CHOICES if valid_override else ('Off',),
+    raw_override, PEDAL_OVERRIDE_CHOICES if valid_override else (resume_limit,),
     available=allowed and readable(PEDAL_OVERRIDE_KEY), default_value=default_override,
-    repair_value='' if valid_override else 'Off',
-    reason='Choose what cruise holds after you press the gas past the adjusted speed limit'))
+    repair_value='' if valid_override else resume_limit,
+    reason='Cruise uses this target when you lift off the accelerator. Held speed stays at or below SET.'))
   return rows

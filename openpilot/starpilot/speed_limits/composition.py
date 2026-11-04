@@ -43,6 +43,9 @@ class Frame:
   pedal_override: PedalOverride = PedalOverride.OFF
   preview_reverted: bool = False
   confirmation_grace_ns: int = 0
+  wheel_override_enabled: bool = False
+  wheel_override_blocked: bool = False
+  wheel_override_since_ns: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,8 @@ class State:
   reset_required: bool = False
   pedal_target_mps: float = 0.
   pedal_blocked_until_release: bool = False
+  wheel_override_metric: bool | None = None
+  wheel_override_since_ns: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,7 +91,9 @@ def _state_valid(state: object) -> bool:
     return False
   return (type(state.session_id) is str and bool(state.session_id) and state.acceptance.session_id == state.session_id and
           _number(state.pedal_target_mps) and (state.last_now_ns is None or _integer(state.last_now_ns)) and
-          type(state.reset_required) is bool and type(state.pedal_blocked_until_release) is bool)
+          type(state.reset_required) is bool and type(state.pedal_blocked_until_release) is bool and
+          (state.wheel_override_metric is None or type(state.wheel_override_metric) is bool) and
+          _integer(state.wheel_override_since_ns))
 
 
 def _host_valid(host: object) -> bool:
@@ -119,9 +126,11 @@ def step(state: State, frame: Frame) -> Result:
       not _host_valid(frame.host) or not acc.authority_is_valid(frame.authority) or
       not isinstance(frame.acceptance_policy, acc.Policy) or
       not isinstance(frame.pedal_override, PedalOverride) or
+      not _integer(frame.wheel_override_since_ns) or
       any(type(value) is not bool for value in (frame.acceptance_policy.confirm_lower,
                                                 frame.acceptance_policy.confirm_higher,
-                                                frame.acceptance_policy.display_only)) or
+                                                frame.acceptance_policy.display_only,
+                                                frame.wheel_override_enabled, frame.wheel_override_blocked)) or
       not isinstance(frame.selected_kind, sd.DomainStatus) or not isinstance(frame.ego_pair, sd.SpeedPair) or
       (frame.is_metric is not None and type(frame.is_metric) is not bool)):
     return Result(replace(state, reset_required=True), status="invalid_frame", errors=("invalid frame or clock",))
@@ -136,7 +145,7 @@ def step(state: State, frame: Frame) -> Result:
   engaged_path = (frame.authority.can_control and (host_long or frame.authority.accelerator_override) and
                   selected_initialized and not frame.acceptance_policy.display_only)
   active_path = engaged_path and not host.force_decel
-  base = replace(state, last_now_ns=frame.now_ns, pedal_target_mps=0.)
+  base = replace(state, last_now_ns=frame.now_ns, pedal_target_mps=0., wheel_override_metric=None, wheel_override_since_ns=0)
 
   if frame.classified_cruise is not None:
     classified = frame.classified_cruise
@@ -185,6 +194,8 @@ def step(state: State, frame: Frame) -> Result:
     return Result(replace(base, reset_required=True), selected, acceptance, domain,
                   status="invalid_domain", errors=(domain.reason,))
   clear_override = frame.preview_reverted or acceptance.basis in ('driver_accept', 'driver_adopt')
+  clear_wheel = clear_override or state.acceptance.accepted != acceptance.state.accepted
+  wheel_metric = state.wheel_override_metric if frame.wheel_override_enabled and not clear_wheel else None
   previous = 0. if clear_override else state.pedal_target_mps
   pedal_blocked = (state.pedal_blocked_until_release or clear_override) and (
     frame.pedal_pressed is not False or ego.status is not sd.DomainStatus.VALID)
@@ -193,17 +204,39 @@ def step(state: State, frame: Frame) -> Result:
     # Longitudinal output can resume one frame after the driver releases the pedal.
     if (system_mode and host.selfdrive_enabled and not engaged_path and selected_initialized and
         not (host.force_decel or frame.acceptance_policy.display_only) and
-        frame.pedal_override is not PedalOverride.OFF and ego.status is sd.DomainStatus.VALID and pair.status is sd.DomainStatus.VALID):
-      base = replace(base, pedal_target_mps=previous)
+        ego.status is sd.DomainStatus.VALID and pair.status is sd.DomainStatus.VALID):
+      base = replace(base, pedal_target_mps=previous if frame.pedal_override is not PedalOverride.OFF else 0.,
+                     wheel_override_metric=wheel_metric)
     return Result(base, selected, acceptance, domain, status='inactive_or_unavailable')
   context = domain.context
   assert context is not None
+  selected_cluster = context.selected_raw_mps + context.selected_delta_mps
+  if frame.wheel_override_enabled and frame.is_metric is not None:
+    since = 0 if clear_wheel else state.wheel_override_since_ns
+    pending = acceptance.state.pending
+    ready = (host_long and not frame.pedal_pressed and not frame.wheel_override_blocked and
+             (pending is None or pending.automatic))
+    adjusted_limit = context.effective_cluster_mps
+    change = frame.classified_cruise.change if frame.classified_cruise is not None else None
+    # A tap belongs to the eligibility interval at button-down, even if SET changes later.
+    if (wheel_metric is None and ready and since > 0 and frame.wheel_override_since_ns == since and change is not None and
+        change.disposition is arb.Disposition.DRIVER_INTENT and change.previous_mps is not None and
+        not sd.set_above_limit(change.previous_mps, adjusted_limit, frame.is_metric)):
+      wheel_metric = frame.is_metric
+    # A display-unit edit can round two different speeds to the same number.
+    if wheel_metric is not None and not sd.set_above_limit(selected_cluster, adjusted_limit, wheel_metric):
+      wheel_metric = None
+    base = replace(base, wheel_override_metric=wheel_metric,
+                   wheel_override_since_ns=(since or frame.now_ns) if ready else 0)
+    if wheel_metric is not None:
+      coordinate = sd.PlannerCoordinate(None, 'wheel', selected_cluster, context.ego_delta_mps)
+      return Result(base, selected, acceptance, domain, coordinate, status=acceptance.basis)
+
   pedal_target = 0.
   if frame.pedal_override is not PedalOverride.OFF:
     ego_cluster = context.ego_raw_mps + context.ego_delta_mps
     gas_above_limit = not pedal_blocked and frame.authority.accelerator_override and ego_cluster > context.effective_cluster_mps
     if gas_above_limit or previous > context.effective_cluster_mps:
-      selected_cluster = context.selected_raw_mps + context.selected_delta_mps
       pedal_target = (selected_cluster if frame.pedal_override is PedalOverride.SET_SPEED else
                       min(selected_cluster, max(previous, ego_cluster if gas_above_limit else 0.)))
       if pedal_target <= context.effective_cluster_mps:
