@@ -2259,6 +2259,10 @@ class SelfdriveD:
     if (getattr(self, 'hkg_angle_steering', False) and self.aol_axis_decision.lateral_active and
         EventName.steerSaturated in self.events.names and ET.WARNING not in self.state_machine.current_alert_types):
       self.state_machine.current_alert_types.append(ET.WARNING)
+    if (self.aol_replay and intent is not None and intent.lateralArmed and
+        EventName.steerSaturated in self.events.names and
+        ET.WARNING not in self.state_machine.current_alert_types):
+      self.state_machine.current_alert_types.append(ET.WARNING)
     axis_published = bool(not REPLAY and self.aol_replay and self.axis_transport_required)
     if axis_published:
       self.aol_axis_publication_deferred = bool(not previous_deferred and self.defer_expired_axis_publication(CS, initial_state))
