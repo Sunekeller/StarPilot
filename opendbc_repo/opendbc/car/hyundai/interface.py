@@ -261,7 +261,7 @@ class CarInterface(CarInterfaceBase):
     if candidate == CAR.KIA_RAY_EV and fingerprint[2].get(0x485) == 8:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CAN_REFRESH_MSGS.value
 
-    if is_blended(ret) and 0x2AA in fingerprint[0]:
+    if 0x2AA in fingerprint[0]:
       ret.minSteerSpeed = 0.0
       ret.flags &= ~HyundaiFlags.MIN_STEER_32_MPH.value
       ret.steerAtStandstill = True
