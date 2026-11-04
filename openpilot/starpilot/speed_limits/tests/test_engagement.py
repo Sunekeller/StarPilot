@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from opendbc.car.dashboard_speed_limit import Status
+from opendbc.car.dashboard_speed_limit import Status, Tracker
 from opendbc.car.structs import car
 from openpilot.cereal import messaging
 from openpilot.common.constants import CV
@@ -121,6 +121,34 @@ def test_match_on_engage_uses_saved_history_as_a_fallback(resume, live):
   engage(instance)
   assert instance.v_cruise_helper.v_cruise_kph == (105. if resume else 80.5 if live else 48.3)
   assert bool(instance.slc_receipts) == (live and not resume)
+
+
+def test_new_dashboard_packet_in_same_episode_matches_set_over_saved_history():
+  runtime, sm, cp = drive(limit=45., offset=0.)
+  previous = AcceptedLimit(Candidate('dashboard', ObservationIdentity(IdentityKind.PRODUCER_EPISODE, value='old-road'), 30 * CV.MPH_TO_MS),
+                           'previous-drive', 0)
+  runtime = Runtime(runtime.settings, previous_limit=previous)
+  state = runtime.step(sm, cp, now_ns=START).message.slcState
+  sm.data['slcState'] = state
+  assert state.hasPresentationAdjustedLimit and state.acceptedMonoTime == 0
+  assert state.acceptedAdjustedLimit == pytest.approx(30 * CV.MPH_TO_MS)
+
+  tracker = Tracker()
+  tracker.update(state.sourceObservedMonoTime, Status.VALID, 45 * CV.MPH_TO_MS, valid_until_ns=state.sourceValidUntilMonoTime)
+  newer = tracker.update(START + 5_000_000, Status.VALID, 45 * CV.MPH_TO_MS, valid_until_ns=START + 300_000_000)
+  assert newer.episode == state.sourceEpisode and newer.observed_ns > state.sourceObservedMonoTime
+  instance = owner(sm, cp, resume=False)
+  instance.CI.CS.dashboard_limit.observation = newer
+
+  engage(instance)
+
+  assert instance.v_cruise_helper.v_cruise_kph == cruise.slc_target_kph(45 * CV.MPH_TO_MS, False)
+  event = receipt(instance)
+  assert event.presentation_id == state.presentationId
+  evidence = sm['slcDashboardObservation']
+  evidence.observedMonoTime, evidence.validUntilMonoTime = newer.observed_ns, newer.valid_until_ns
+  adopted = runtime.step(sm, cp, now_ns=event.observed_ns, cruise_event=event).message.slcState
+  assert adopted.actionStatus == 'adopt' and adopted.acceptedSpeedLimit == pytest.approx(45 * CV.MPH_TO_MS)
 
 
 @pytest.mark.parametrize('confirmation', [False, True])

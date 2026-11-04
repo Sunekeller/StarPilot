@@ -3,6 +3,7 @@
 import math
 
 import pytest
+from opendbc.car.dashboard_speed_limit import Observation, Status
 
 from openpilot.cereal import messaging
 from openpilot.selfdrive.car.cruise import SlcPendingConfirmation
@@ -113,3 +114,33 @@ def test_engagement_rejects_unqualified_current_target(sm, field, value):
 def test_engagement_accepts_float32_cruise_boundaries(sm, target):
   sm['slcState'].hasPresentationAdjustedLimit, sm['slcState'].presentationAdjustedLimit = True, target
   assert physical_actions.engagement_state(sm, None, 'card', NOW) is not None
+
+
+@pytest.mark.parametrize('state_changes, local_changes, after_ns, matches', [
+  pytest.param({}, {}, 0, True, id='newer-same-episode'),
+  pytest.param({}, {'observed_ns': NOW - 100_000_000, 'valid_until_ns': NOW + 50_000_000}, 0, True, id='same-packet'),
+  pytest.param({}, {'observed_ns': NOW - 100_000_000}, 0, False, id='inconsistent-same-packet'),
+  pytest.param({'sourceValidUntilMonoTime': NOW}, {}, 0, True, id='at-planner-expiry'),
+  pytest.param({}, {'valid_until_ns': NOW}, 0, True, id='at-local-expiry'),
+  pytest.param({'sourceValidUntilMonoTime': NOW - 1}, {}, 0, False, id='expired-planner-sample'),
+  pytest.param({}, {'valid_until_ns': NOW - 1}, 0, False, id='expired-local-sample'),
+  pytest.param({}, {'observed_ns': NOW - 100_000_001}, 0, False, id='older-local-sample'),
+  pytest.param({}, {'observed_ns': NOW + 1}, 0, False, id='future-local-sample'),
+  pytest.param({'sourceObservedMonoTime': NOW - 10_000_000}, {}, 0, False, id='sample-after-planner-frame'),
+  pytest.param({}, {'episode': 2}, 0, False, id='new-episode'),
+  pytest.param({}, {'speed_mps': 24.}, 0, False, id='different-speed'),
+  pytest.param({'sourceProducerSessionId': 'old-card'}, {}, 0, False, id='different-producer'),
+  pytest.param({}, {}, NOW - 100_000_000, False, id='planner-sample-before-settings-change'),
+])
+def test_dashboard_engagement_qualifies_both_samples(sm, state_changes, local_changes, after_ns, matches):
+  state = sm['slcState']
+  state.source, state.sourceProducerSessionId, state.sourceEpisode = 'dashboard', 'card', 1
+  state.frameMonoTime = sm.logMonoTime['slcState'] = NOW - 20_000_000
+  state.sourceObservedMonoTime, state.sourceValidUntilMonoTime = NOW - 100_000_000, NOW + 50_000_000
+  state.hasPresentationAdjustedLimit, state.presentationAdjustedLimit = True, 25.
+  for field, value in state_changes.items():
+    setattr(state, field, value)
+  local = Observation(**({'status': Status.VALID, 'speed_mps': 25., 'episode': 1,
+                          'observed_ns': NOW - 5_000_000, 'valid_until_ns': NOW + 145_000_000} | local_changes))
+
+  assert (physical_actions.engagement_state(sm, local, 'card', NOW, after_ns=after_ns) is not None) == matches

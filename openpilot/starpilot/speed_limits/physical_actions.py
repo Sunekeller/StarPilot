@@ -30,13 +30,17 @@ def adoption_speed(state):
 
 
 def source_matches(state, observation, producer_session: str, now_ns: int) -> bool:
+  observed_ns = int(state.sourceObservedMonoTime)
+  expiry_ns = int(state.sourceValidUntilMonoTime)
+  # Card can have a newer packet for the same episode before the planner publishes again.
   return (str(state.source) == 'dashboard' and str(state.observationKind) == 'valid' and
           str(state.sourceProducerSessionId) == producer_session and producer_session != '' and
           getattr(observation.status, 'value', observation.status) == 'valid' and int(state.sourceEpisode) > 0 and
           int(state.sourceEpisode) == int(observation.episode) and
-          int(state.sourceObservedMonoTime) == int(observation.observed_ns) and
-          int(state.sourceValidUntilMonoTime) == int(observation.valid_until_ns) and
-          0 < int(observation.observed_ns) <= now_ns <= int(observation.valid_until_ns) and
+          0 < observed_ns <= state.frameMonoTime and observed_ns <= observation.observed_ns <= now_ns and
+          observed_ns < expiry_ns and observation.observed_ns < observation.valid_until_ns and
+          now_ns <= min(expiry_ns, observation.valid_until_ns) and
+          (observed_ns != observation.observed_ns or expiry_ns == observation.valid_until_ns) and
           finite_speed(state.speedLimit) and finite_speed(observation.speed_mps) and
           abs(float(state.speedLimit) - float(observation.speed_mps)) <= 0.02)
 
@@ -85,7 +89,7 @@ def engagement_state(sm, observation, producer_session: str, now_ns: int, *, aft
       str(state.source) == 'online' or not state.hasPresentationAdjustedLimit):
     return None
   if str(state.source) == 'dashboard' and (
-      observation is None or observation.observed_ns <= after_ns or not source_matches(state, observation, producer_session, now_ns)):
+      observation is None or int(state.sourceObservedMonoTime) <= after_ns or not source_matches(state, observation, producer_session, now_ns)):
     return None
   if str(state.source) == 'vision' and not (
       state.sourceProducerSessionId and state.sourceEpisode > 0 and
