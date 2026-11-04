@@ -255,6 +255,16 @@ def below_steer_speed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.S
     Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.4)
 
 
+def steer_temp_unavailable_silent_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  # Silent only above 85 deg, where the fault is the self-inflicted >90 deg EPS fault-avoidance pulse
+  return Alert(
+    "Steering Assist Temporarily Unavailable",
+    "",
+    AlertStatus.userPrompt, AlertSize.small,
+    Priority.LOW, VisualAlert.steerRequired,
+    AudibleAlert.none if abs(CS.steeringAngleDeg) > 85 else AudibleAlert.prompt, 1.8)
+
+
 def calibration_incomplete_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   first_word = 'Recalibrating' if sm['extrinsicsCalibration'].calStatus == log.ExtrinsicsCalibration.Status.recalibrating else 'Calibrating'
   return Alert(
@@ -510,11 +520,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # ********** events only containing alerts that display while engaged **********
 
   EventName.steerTempUnavailableSilent: {
-    ET.WARNING: Alert(
-      "Steering Assist Temporarily Unavailable",
-      "",
-      AlertStatus.userPrompt, AlertSize.small,
-      Priority.LOW, VisualAlert.steerRequired, AudibleAlert.none, 1.8),
+    ET.WARNING: steer_temp_unavailable_silent_alert,
   },
 
   EventName.driverDistracted1: {
