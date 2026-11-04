@@ -140,16 +140,17 @@ class Advance:
     eligible = (can_offer and not (pending_current or current_first) and type(seconds) is int and 0 < seconds <= 10 and not standstill and
                 speed_mps is not None and type(speed_mps) in (int, float) and math.isfinite(speed_mps) and speed_mps > 0 and
                 upcoming is not None and upcoming.distance_m <= speed_mps * seconds)
-    if eligible and (encounter is None or replaced and not (encounter.crossed and pending_preview)):
-      proposed = dict(observations)
-      proposed[sel.Source.MAP] = upcoming.observation
-      if sel.select_limit(proposed, policy).selected_source is sel.Source.MAP:
-        assert upcoming.observation.candidate is not None
-        encounter = self.encounter = Encounter(upcoming.boundary_id, current.speed_mps,
-          upcoming.observation.candidate.speed_mps, upcoming.way_id, now_ns, current_way_id,
-          applied_preview=previous.applied_preview if previous is not None else None)
-    elif eligible and not encounter.crossed:
-      encounter.boundary_id = upcoming.boundary_id
+    if eligible:
+      if encounter is None or replaced and not (encounter.crossed and pending_preview):
+        proposed = dict(observations)
+        proposed[sel.Source.MAP] = upcoming.observation
+        if sel.select_limit(proposed, policy).selected_source is sel.Source.MAP:
+          assert upcoming.observation.candidate is not None
+          encounter = self.encounter = Encounter(upcoming.boundary_id, current.speed_mps,
+            upcoming.observation.candidate.speed_mps, upcoming.way_id, now_ns, current_way_id,
+            applied_preview=previous.applied_preview if previous is not None else None)
+      elif not encounter.crossed:
+        encounter.boundary_id = upcoming.boundary_id
     if encounter is None:
       return None
     if encounter.retired:

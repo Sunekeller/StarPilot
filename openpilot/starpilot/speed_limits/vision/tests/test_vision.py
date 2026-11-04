@@ -478,5 +478,6 @@ class TestVision(unittest.TestCase):
     missing = fallback.step(sm, cp, now_ns=2_350_000_000, now_boot_ns=6_350_000_000)
     self.assertTrue(missing.message.slcState.hasCeiling)
     self.assertEqual(missing.result.acceptance.basis, 'unknown')
+    assert missing.result.acceptance.control_target_mps is not None
     self.assertAlmostEqual(missing.result.acceptance.control_target_mps, dashboard.speedMps)
     self.assertEqual(missing.result.acceptance.state.accepted, chosen_accepted.result.acceptance.state.accepted)

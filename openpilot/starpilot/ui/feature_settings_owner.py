@@ -38,8 +38,8 @@ from openpilot.starpilot.ui.feature_settings_state import (
 )
 from openpilot.starpilot.speed_limits.offset_document import MPH_TO_MPS
 from openpilot.starpilot.speed_limits.runtime_settings import (
-  ADVANCE_BYTES, ADVANCE_KEYS, ADVANCE_SECONDS, CONFIRMATION_BYTES, CONFIRMATION_CHOICES,
-  PEDAL_OVERRIDE_BYTES, PEDAL_OVERRIDE_CHOICES, PEDAL_OVERRIDE_KEY, SOURCE_PRIORITY_KEYS, PedalOverride,
+  ADVANCE_BYTES, ADVANCE_KEYS, CONFIRMATION_CHOICES,
+  PEDAL_OVERRIDE_BYTES, PEDAL_OVERRIDE_CHOICES, PEDAL_OVERRIDE_KEY, SOURCE_PRIORITY_KEYS,
 )
 from openpilot.starpilot.aol.vehicle import policy_for as aol_policy_for
 from openpilot.starpilot.feature_capabilities import longitudinal_supported as feature_longitudinal_supported
@@ -47,6 +47,7 @@ from openpilot.starpilot.lateral.torque_settings import DOCUMENT_KEY, LEGACY_KEY
 from openpilot.starpilot.ui.torque_feature import TorqueFeature
 from openpilot.starpilot.ui.controller_feature import ControllerFeature, SETUP_ACTION
 from openpilot.starpilot.ui.slc_offset_feature import SlcOffsetOwner
+from openpilot.starpilot.ui.slc_policy_feature import SLC_ADVANCE_CHOICES, policy_rows
 from openpilot.starpilot.longitudinal.profile_preferences import read_document_value, read_profile_health
 from openpilot.starpilot.ui.long_profile_feature import (LongProfileFeature, is_long_confirm_action, VALUE_HELP, CATEGORY_HELP,
                                                        preset_label, preset_value)
@@ -114,7 +115,6 @@ FLOAT_SPECS = {
      for suffix in ("JerkAcceleration", "JerkDeceleration", "JerkDanger", "JerkSpeedDecrease", "JerkSpeed")},
 }
 SLC_PRIORITY, SLC_SECONDARY, SLC_TERTIARY = SOURCE_PRIORITY_KEYS
-SLC_ADVANCE_CHOICES = ('Off', *(f'{seconds} s' for seconds in ADVANCE_SECONDS[1:]))
 LONG_PREFIX = "profile:"
 PRESETS = {"acceleration": ACCELERATION_PRESETS, "braking": BRAKING_PRESETS, "following": FOLLOWING_PRESETS}
 PROFILE_NAMES = ("aggressive", "standard", "relaxed")
@@ -1128,31 +1128,7 @@ class FeatureSettingsOwner:
                                    reason="Start SET at the SLC limit plus offset. RES restores your previous SET"))
       rows.append(self._bool_row("ShowSpeedLimits", "Show speed limit signs", self.authority("preferences"),
                                  reason="Display signs independently of Speed Limit Controller; does not change cruise speed"))
-      _, raw_confirmation, readable_confirmation = self._value('SLCConfirmation')
-      valid_confirmation = readable_confirmation and raw_confirmation in (None, *CONFIRMATION_BYTES)
-      confirmation = CONFIRMATION_CHOICES[int(raw_confirmation or b'0')] if valid_confirmation else 'Invalid'
-      rows.append(FeatureRow('SLCConfirmation', 'Confirm limits', confirmation, raw_confirmation,
-        tuple(CONFIRMATION_CHOICES.values()), available=allowed and self._readable('SLCConfirmation'), default_value='Off',
-        repair_value='' if valid_confirmation else 'Both',
-        reason='Off adopts limits automatically. For prompts, + accepts and − declines within 30 seconds'
-          if valid_confirmation else 'Invalid saved confirmation mode; choose a confirmation policy'))
-      for key, direction in zip(ADVANCE_KEYS, ('higher', 'lower'), strict=True):
-        advance, raw_advance, readable_advance = self._value(key)
-        valid_advance = readable_advance and (raw_advance is None or raw_advance in ADVANCE_BYTES)
-        rows.append(FeatureRow(key, f'Adopt {direction} limits early',
-          SLC_ADVANCE_CHOICES[int(advance)] if valid_advance else f'Saved {advance}', raw_advance,
-          SLC_ADVANCE_CHOICES if valid_advance else ('Off',), available=allowed, default_value='Off',
-          reason=f'Offer or adopt {direction} mapped limits this many seconds early at the current speed'
-            if valid_advance else 'Invalid saved advance time; restore Off'))
-      _, raw_override, readable_override = self._value(PEDAL_OVERRIDE_KEY)
-      default_override = PEDAL_OVERRIDE_CHOICES[PedalOverride.SPEED_REACHED]
-      valid_override = readable_override and (raw_override is None or raw_override in PEDAL_OVERRIDE_BYTES)
-      rows.append(FeatureRow(PEDAL_OVERRIDE_KEY, 'Gas pedal override',
-        default_override if raw_override is None else PEDAL_OVERRIDE_CHOICES[int(raw_override)] if valid_override else 'Invalid',
-        raw_override, PEDAL_OVERRIDE_CHOICES if valid_override else ('Off',),
-        available=allowed and self._readable(PEDAL_OVERRIDE_KEY), default_value=default_override,
-        repair_value='' if valid_override else 'Off',
-        reason='Choose what cruise holds after you press the gas past the adjusted speed limit'))
+      rows.extend(policy_rows(self._value, self._readable, allowed=allowed))
       source_capability = self._source_capability()
       vision_dev, maps_available = source_capability
       source_allowed = configurable and self.authority("preferences")

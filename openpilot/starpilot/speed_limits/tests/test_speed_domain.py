@@ -27,8 +27,10 @@ class SpeedDomainTests(unittest.TestCase):
 
   def test_offset_and_ego_delta_apply_once(self):
     selected = sd.selected_pair_from_kph(30., 31. * 3.6, session_id=SESSION, timestamp_ns=0)
+    assert selected.cluster_mps is not None
     self.assertAlmostEqual(selected.cluster_mps, 31.)
     domain = sd.resolve(self.accepted, SCHEDULE, selected, self.pair(25., 26.))
+    assert domain.context is not None
     coordinate = sd.to_planner_coordinate(domain.context)
     self.assertEqual(coordinate.cap_mps, 21.)
     self.assertEqual(coordinate.cluster_target_mps, 22.)
@@ -39,6 +41,7 @@ class SpeedDomainTests(unittest.TestCase):
       with self.subTest(offset=offset, delta=delta):
         domain = sd.resolve(self.accepted, sd.OffsetSchedule((sd.OffsetBand(0., None, offset),)),
                             self.pair(), self.pair(20., 20. + delta))
+        assert domain.context is not None
         coordinate = sd.to_planner_coordinate(domain.context)
         self.assertEqual(coordinate.cluster_target_mps, 20.)
         self.assertEqual(coordinate.cap_mps, 20. - delta)
@@ -66,6 +69,7 @@ class SpeedDomainTests(unittest.TestCase):
     missing = acc.step(self.accepted.state, acc.Observation(acc.ObservationKind.UNKNOWN), ACTIVE, POLICY, now_ns=1)
     pair = self.pair(now=1)
     result = sd.resolve(missing, SCHEDULE, pair, pair)
+    assert result.context is not None
     self.assertEqual(result.context.accepted_raw_mps, 20.)
     self.assertEqual(sd.to_planner_coordinate(result.context).cap_mps, 22.)
     self.assertEqual(sd.resolve(replace(missing, control_target_mps=21.), SCHEDULE, pair, pair).status, sd.DomainStatus.INVALID)
@@ -74,6 +78,7 @@ class SpeedDomainTests(unittest.TestCase):
 
   def test_cluster_measurements_below_raw_do_not_add_a_delta(self):
     domain = sd.resolve(self.accepted, SCHEDULE, self.pair(20., 19.), self.pair(20., 19.))
+    assert domain.context is not None
     coordinate = sd.to_planner_coordinate(domain.context)
     self.assertEqual(coordinate.cap_mps, 22.)
     self.assertEqual(coordinate.ego_delta_mps, 0.)
@@ -96,7 +101,9 @@ class SpeedDomainTests(unittest.TestCase):
 
     accepted = acc.step(acc.new_session(SESSION), acc.Observation(acc.ObservationKind.VALID, candidate(15.)), ACTIVE, POLICY, now_ns=0)
     domain = sd.resolve(accepted, SCHEDULE, self.pair(25., 26.), self.pair(20., 21.))
+    assert domain.context is not None
     coordinate = sd.to_planner_coordinate(domain.context)
+    assert coordinate.cap_mps is not None
     self.assertEqual(coordinate.cap_mps, 16.)
     cp = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
     ordinary, composed = LongitudinalPlanner(cp, init_v=V_EGO), LongitudinalPlanner(cp, init_v=V_EGO)

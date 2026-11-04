@@ -60,6 +60,7 @@ class SavedSlcLifecycle:
       timing_only = configuration == (old_admitted, retimed, *old_display)
       preserve_runtime |= configuration[:-1] == (old_admitted, replace(retimed, offsets=settings.offsets), *old_display[:-1])
     if preserve_runtime:
+      assert self.runtime is not None and self.configuration is not None
       # Policy/source edits renew choices without releasing the engaged speed cap.
       choices_changed = (settings.selection != self.runtime.settings.selection or
                          settings.acceptance != self.runtime.settings.acceptance or configuration[2:5] != self.configuration[2:5])

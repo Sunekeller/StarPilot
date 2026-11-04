@@ -4366,6 +4366,8 @@ public:
   inline bool hasUpcomingBoundaryId() const;
   inline  ::capnp::Text::Reader getUpcomingBoundaryId() const;
 
+  inline bool getAcceptedIsPreview() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -4658,6 +4660,9 @@ public:
   inline  ::capnp::Text::Builder initUpcomingBoundaryId(unsigned int size);
   inline void adoptUpcomingBoundaryId(::capnp::Orphan< ::capnp::Text>&& value);
   inline ::capnp::Orphan< ::capnp::Text> disownUpcomingBoundaryId();
+
+  inline bool getAcceptedIsPreview();
+  inline void setAcceptedIsPreview(bool value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -19711,6 +19716,20 @@ inline void SlcState::Builder::adoptUpcomingBoundaryId(
 inline ::capnp::Orphan< ::capnp::Text> SlcState::Builder::disownUpcomingBoundaryId() {
   return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
       ::capnp::bounded<21>() * ::capnp::POINTERS));
+}
+
+inline bool SlcState::Reader::getAcceptedIsPreview() const {
+  return _reader.getDataField<bool>(
+      ::capnp::bounded<141>() * ::capnp::ELEMENTS);
+}
+
+inline bool SlcState::Builder::getAcceptedIsPreview() {
+  return _builder.getDataField<bool>(
+      ::capnp::bounded<141>() * ::capnp::ELEMENTS);
+}
+inline void SlcState::Builder::setAcceptedIsPreview(bool value) {
+  _builder.setDataField<bool>(
+      ::capnp::bounded<141>() * ::capnp::ELEMENTS, value);
 }
 
 inline bool SlcState::SourceReading::Reader::hasSource() const {

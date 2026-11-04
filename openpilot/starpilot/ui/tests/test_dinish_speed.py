@@ -85,7 +85,7 @@ def test_large_sign_is_secondary_to_set_speed_at_the_saved_position():
         current = sample_state('engaged', document)
         factor = 3.6 if metric else 2.2369362921
         observation = replace(current.speed_limit, speed_limit_mps=120 / factor,
-                              presentation_adjusted_limit_mps=130 / factor)
+                              presentation_adjusted_limit_mps=130 / factor, effective_cluster_target_mps=130 / factor)
         current = replace(current, metric=metric, cruise_kph=value / factor * 3.6 if value else None,
                           speed_limit=observation)
         calls = []
