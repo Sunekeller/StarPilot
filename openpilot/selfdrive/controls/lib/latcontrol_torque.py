@@ -27,15 +27,15 @@ from openpilot.starpilot.flm import live as flm
 # Additionally, there is friction in the steering wheel that needs
 # to be overcome to move it at all, this is compensated for too.
 
-KP = 0.8
-KI = 0.15
+KP = 0.7
+KI = 0.3
 
 INTERP_SPEEDS = [1, 1.5, 2.0, 3.0, 5, 7.5, 10, 15, 30]
 KP_INTERP = [250, 120, 65, 30, 11.5, 5.5, 3.5, 2.0, KP]
 
 LP_FILTER_CUTOFF_HZ = 1.2
 JERK_LOOKAHEAD_SECONDS = 0.19
-JERK_GAIN = 0.3
+JERK_GAIN = 0.15
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -136,7 +136,7 @@ class LatControlTorque(LatControl):
     ff = gravity_adjusted_future_lateral_accel
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
     ff -= self.torque_params.latAccelOffset
-    threshold = flm.base_threshold(self.flm_surface, CS.vEgo, FRICTION_THRESHOLD)
+    threshold = flm.base_threshold(self.flm_surface, CS.vEgo, 0.05)
     ff, threshold = flm.stages(self.flm_surface, CS, setpoint, desired_lateral_jerk, ff, threshold)
     if friction_policy is not None:
       threshold = friction_policy.friction_threshold(CS.vEgo, setpoint, desired_lateral_jerk)
