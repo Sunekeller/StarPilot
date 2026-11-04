@@ -1,0 +1,634 @@
+From 3cb38bb9e02ae2e854b5a8ef0963a26fe8c40ab8 Mon Sep 17 00:00:00 2001
+From: Dom <168790843+firestar5683@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 13:39:59 -0600
+Subject: [PATCH 1/2] Safely stage the audited legacy StarPilot return
+
+---
+ launch_chffrplus.sh                           |  41 +++++-
+ openpilot/starpilot/software/fast_update.py   |  16 ++-
+ .../system/updated/tests/test_fast_request.py |   9 +-
+ .../updated/tests/test_retained_agnos.py      |  87 ++++++++++++
+ .../updated/tests/test_vendored_update.py     | 132 ++++++++++++++++++
+ openpilot/system/updated/updated.py           |  67 +++++++--
+ 6 files changed, 325 insertions(+), 27 deletions(-)
+
+diff --git a/launch_chffrplus.sh b/launch_chffrplus.sh
+index 7e771a90..0e0c7b39 100755
+--- a/launch_chffrplus.sh
++++ b/launch_chffrplus.sh
+@@ -57,6 +57,37 @@ EOF
+   fi
+ }
+ 
++function update_is_ready {
++  [ -f "$1" ] && [ ! -L "$1" ]
++}
++
++# A validated legacy return records the OS it was staged against. Check it on
++# every boot before swapping trees, including manual reboots.
++# Keep this in sync with TRUSTED_LEGACY_RELEASES in updated.py.
++TRUSTED_LEGACY_STARPILOT_COMMIT="4a553da9ac22a14e34513c011aed04c1e93b4619"
++
++function staged_os_is_compatible {
++  local staged="$1" marker="$1/.git/starpilot-retain-agnos" commit
++  commit="$(git -C "$staged" rev-parse --verify 'HEAD^{commit}')" || return 1
++  if [ "$commit" = "$TRUSTED_LEGACY_STARPILOT_COMMIT" ]; then
++    [ -f "$marker" ] && [ -s "$marker" ] && [ ! -L "$marker" ] && [ -r /VERSION ] && [ "$(cat "$marker")" = "$(< /VERSION)" ]
++  else
++    [ ! -e "$marker" ] && [ ! -L "$marker" ]
++  fi
++}
++
++function reset_update_os_environment {
++  unset AGNOS_VERSION AGNOS_ACCEPTED_VERSIONS
++}
++
++function maybe_activate_legacy_agnos {
++  local repo="$1" verifier="$2" manifest="$3" commit
++  commit="$(git -C "$repo" rev-parse --verify 'HEAD^{commit}')" || return 1
++  if [ "$commit" != "$TRUSTED_LEGACY_STARPILOT_COMMIT" ] && [ ! -L "$manifest" ]; then
++    "$verifier" --verify "$manifest" && sudo reboot
++  fi
++}
++
+ function launch {
+   # Remove orphaned git lock if it exists on boot
+   [ -f "$DIR/.git/index.lock" ] && rm -f "$DIR/.git/index.lock"
+@@ -75,8 +106,10 @@ function launch {
+     if [ $? -eq 0 ]; then
+       echo "${DIR} has been modified, skipping overlay update installation"
+     else
+-      if [ -f "${STAGING_ROOT}/finalized/.overlay_consistent" ]; then
+-        if [ ! -d /data/safe_staging/old_openpilot ]; then
++      if update_is_ready "${STAGING_ROOT}/finalized/.overlay_consistent"; then
++        if ! staged_os_is_compatible "${STAGING_ROOT}/finalized"; then
++          echo "Staged update requires a different or unverified AGNOS version; skipping installation."
++        elif [ ! -d /data/safe_staging/old_openpilot ]; then
+           echo "Valid overlay update found, installing"
+           LAUNCHER_LOCATION="${BASH_SOURCE[0]}"
+ 
+@@ -84,10 +117,10 @@ function launch {
+           mv "${STAGING_ROOT}/finalized" "$DIR"
+           cd "$DIR"
+           # releases before the openpilot/ move can't swap AGNOS on newer AGNOS, use ours
+-          [ ! -L system/hardware/tici/agnos.json ] && /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py --verify system/hardware/tici/agnos.json && sudo reboot
++          maybe_activate_legacy_agnos "$DIR" /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py system/hardware/tici/agnos.json
+ 
+           echo "Restarting launch script ${LAUNCHER_LOCATION}"
+-          unset AGNOS_VERSION
++          reset_update_os_environment
+           exec "${LAUNCHER_LOCATION}"
+         else
+           echo "openpilot backup found, not updating"
+diff --git a/openpilot/starpilot/software/fast_update.py b/openpilot/starpilot/software/fast_update.py
+index 0233d5ae..56cc2f8d 100644
+--- a/openpilot/starpilot/software/fast_update.py
++++ b/openpilot/starpilot/software/fast_update.py
+@@ -30,6 +30,15 @@ def required_os_version(launch):
+   return versions[0] if len(versions) == 1 else None
+ 
+ 
++def legacy_os_compatible(launch, current_os):
++  required_os = required_os_version(launch)
++  accepted = re.findall(r'^\s*export\s+AGNOS_ACCEPTED_VERSIONS=["\']([^"\'\n]+)["\']\s*$', launch, re.MULTILINE)
++  accepted_os = {required_os}
++  if len(accepted) == 1:
++    accepted_os.update(accepted[0].split())
++  return bool(required_os and current_os and current_os in accepted_os)
++
++
+ def validate_legacy_return(git, revision, branch):
+   if branch not in ('Dom', 'StarPilot'):
+     raise FastUpdateIncompatible('Legacy return is only available for Dom and StarPilot 6.x releases')
+@@ -243,12 +252,7 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
+     validate_revision(repo, target)
+   launch = git('show', f'{target}:launch_env.sh')
+   required_os = required_os_version(launch)
+-  accepted_os = {required_os}
+-  if legacy_return:
+-    accepted = re.findall(r'^\s*export\s+AGNOS_ACCEPTED_VERSIONS=["\']([^"\'\n]+)["\']\s*$', launch, re.MULTILINE)
+-    if len(accepted) == 1:
+-      accepted_os.update(accepted[0].split())
+-  if not required_os or not current_os or current_os not in accepted_os:
++  if not (legacy_os_compatible(launch, current_os) if legacy_return else required_os and current_os == required_os):
+     raise FastUpdateIncompatible('Update requires a different or unverified operating system')
+   if target == previous and branch == initial_branch and not git('status', '--porcelain', '--untracked-files=no').strip():
+     notify('complete', 'Already up to date.')
+diff --git a/openpilot/system/updated/tests/test_fast_request.py b/openpilot/system/updated/tests/test_fast_request.py
+index 82b78a28..e805ca8f 100644
+--- a/openpilot/system/updated/tests/test_fast_request.py
++++ b/openpilot/system/updated/tests/test_fast_request.py
+@@ -77,6 +77,7 @@ class TestFastRequest(unittest.TestCase):
+     module.set_consistent_flag = Mock()
+     module.init_overlay = Mock()
+     module.validate_revision = Mock()
++    module.validate_update_revision = Mock(return_value=False)
+     module.AGNOS = False
+     self.updater.target_branch = "SecretGoodStarPilot"
+     self.updater._checked_branch = "SecretGoodStarPilot"
+@@ -84,7 +85,7 @@ class TestFastRequest(unittest.TestCase):
+     for failure in (False, True):
+       with self.subTest(failure=failure):
+         module.init_overlay.reset_mock()
+-        module.validate_revision.reset_mock()
++        module.validate_update_revision.reset_mock()
+         self.writes.clear()
+         self.values.pop("LastUpdateTime", None)
+         self.helper._control_request("download")
+@@ -105,9 +106,9 @@ class TestFastRequest(unittest.TestCase):
+         self.assertEqual("LastUpdateTime" in self.values, not failure)
+         module.finalize_update.assert_called_once()
+         module.init_overlay.assert_called_once_with()
+-        self.assertEqual(module.validate_revision.call_args_list, [
+-          mock.call(module.OVERLAY_MERGED, 'a' * 40),
+-          mock.call(module.OVERLAY_MERGED, 'HEAD'),
++        self.assertEqual(module.validate_update_revision.call_args_list, [
++          mock.call(module.OVERLAY_MERGED, 'a' * 40, 'SecretGoodStarPilot'),
++          mock.call(module.OVERLAY_MERGED, 'HEAD', 'SecretGoodStarPilot'),
+         ])
+ 
+   def test_fast_request_skips_staging_and_startup_delay(self):
+diff --git a/openpilot/system/updated/tests/test_retained_agnos.py b/openpilot/system/updated/tests/test_retained_agnos.py
+index 4bff98e4..aa4ddcd5 100644
+--- a/openpilot/system/updated/tests/test_retained_agnos.py
++++ b/openpilot/system/updated/tests/test_retained_agnos.py
+@@ -44,6 +44,93 @@ class TestRetainedAgnos(unittest.TestCase):
+     patcher.start()
+     self.addCleanup(patcher.stop)
+ 
++  def test_readiness_flag_never_follows_or_replaces_existing_marker(self):
++    updated = load_updater()
++    updated.FINALIZED = str(self.root)
++    marker = self.root / '.overlay_consistent'
++    target = self.root / 'untouched'
++    target.write_text('keep')
++    marker.symlink_to(target)
++    with patch.object(updated.os, 'sync'):
++      with self.assertRaises(FileExistsError):
++        updated.set_consistent_flag(True)
++      self.assertEqual(target.read_text(), 'keep')
++      updated.set_consistent_flag(False)
++      updated.set_consistent_flag(True)
++      self.assertTrue(marker.is_file())
++      self.assertFalse(marker.is_symlink())
++      with self.assertRaises(FileExistsError):
++        updated.set_consistent_flag(True)
++
++  def test_launcher_readiness_rejects_symlink(self):
++    function = shell_function(ROOT / 'launch_chffrplus.sh', 'update_is_ready')
++    target = self.root / 'target'
++    target.touch()
++    marker = self.root / 'marker'
++    marker.symlink_to(target)
++    command = function + f'\nupdate_is_ready {shlex.quote(str(marker))}'
++    self.assertNotEqual(subprocess.run(['bash', '-c', command]).returncode, 0)
++    marker.unlink()
++    marker.touch()
++    self.assertEqual(subprocess.run(['bash', '-c', command]).returncode, 0)
++
++  def test_launch_discards_inherited_os_version_overrides(self):
++    function = shell_function(ROOT / 'launch_chffrplus.sh', 'reset_update_os_environment')
++    env_file = self.root / 'target_launch_env.sh'
++    env_file.write_text('if [ -z "$AGNOS_VERSION" ]; then export AGNOS_VERSION="19.8.1"; fi\n' +
++                        'if [ -z "$AGNOS_ACCEPTED_VERSIONS" ]; then export AGNOS_ACCEPTED_VERSIONS="19.8.1 20.2.1"; fi\n')
++    script = function + '\nexport AGNOS_VERSION=wrong AGNOS_ACCEPTED_VERSIONS=wrong\n' + \
++      f'reset_update_os_environment\nsource {shlex.quote(str(env_file))}\nprintf "%s|%s" "$AGNOS_VERSION" "$AGNOS_ACCEPTED_VERSIONS"'
++    result = subprocess.check_output(['bash', '-c', script], text=True)
++    self.assertEqual(result, '19.8.1|19.8.1 20.2.1')
++
++  def test_legacy_launch_checks_exact_commit_and_os_before_swap_or_slot_activation(self):
++    repo = self.root / 'staged'
++    repo.mkdir()
++    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
++    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
++                    'commit', '--allow-empty', '-qm', 'fixture'], check=True)
++    commit = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
++    version = self.root / 'VERSION'
++    version.write_text('20.2.1\n')
++    marker = repo / '.git/starpilot-retain-agnos'
++    launcher = ROOT / 'launch_chffrplus.sh'
++    text = launcher.read_text()
++    audited = next(iter(load_updater().TRUSTED_LEGACY_RELEASES['StarPilot']))
++    self.assertIn(f'TRUSTED_LEGACY_STARPILOT_COMMIT="{audited}"', text)
++    check = shell_function(launcher, 'staged_os_is_compatible').replace('/VERSION', str(version))
++    activate = shell_function(launcher, 'maybe_activate_legacy_agnos')
++    verifier = self.root / 'verifier'
++    log = self.root / 'calls'
++    verifier.write_text(f'#!/bin/sh\necho verify >> {shlex.quote(str(log))}\n')
++    verifier.chmod(0o755)
++    manifest = self.root / 'agnos.json'
++    manifest.write_text('[]')
++    common = f'TRUSTED_LEGACY_STARPILOT_COMMIT={commit}\n{check}\n{activate}\n'
++    def admission():
++      return subprocess.run(['bash', '-c', common + f'staged_os_is_compatible {shlex.quote(str(repo))}'], check=False).returncode
++    self.assertNotEqual(admission(), 0)  # Missing marker is not a modern update.
++    marker.write_text('wrong\n')
++    self.assertNotEqual(admission(), 0)
++    marker.unlink()
++    marker.symlink_to(version)
++    self.assertNotEqual(admission(), 0)
++    marker.unlink()
++    marker.write_text('20.2.1\n')
++    self.assertEqual(admission(), 0)
++    version.write_text('changed\n')
++    self.assertNotEqual(admission(), 0)  # Manual reboot must recheck the OS.
++    shell = common + f'sudo() {{ echo reboot >> {shlex.quote(str(log))}; }}\n' + \
++      f'maybe_activate_legacy_agnos {shlex.quote(str(repo))} {shlex.quote(str(verifier))} {shlex.quote(str(manifest))}\n'
++    subprocess.run(['bash', '-c', shell], check=True)
++    self.assertFalse(log.exists())  # A pinned legacy install never activates a slot.
++    marker.unlink()
++    modern = common.replace(f'TRUSTED_LEGACY_STARPILOT_COMMIT={commit}', 'TRUSTED_LEGACY_STARPILOT_COMMIT=other')
++    self.assertEqual(subprocess.run(['bash', '-c', modern + f'staged_os_is_compatible {shlex.quote(str(repo))}']).returncode, 0)
++    subprocess.run(['bash', '-c', shell.replace(f'TRUSTED_LEGACY_STARPILOT_COMMIT={commit}',
++                                                  'TRUSTED_LEGACY_STARPILOT_COMMIT=other')], check=True)
++    self.assertEqual(log.read_text().splitlines(), ['verify', 'reboot'])
++
+   def test_retained_match_never_flashes_or_queries_slot(self):
+     with patch.dict(os.environ, {'AGNOS_VERSION': 'unexpected', 'AGNOS_UPDATE_POLICY': 'auto'}):
+       self.updater.handle_agnos_update()
+diff --git a/openpilot/system/updated/tests/test_vendored_update.py b/openpilot/system/updated/tests/test_vendored_update.py
+index 057643ce..05216622 100644
+--- a/openpilot/system/updated/tests/test_vendored_update.py
++++ b/openpilot/system/updated/tests/test_vendored_update.py
+@@ -105,6 +105,7 @@ class TestVendoredUpdate(unittest.TestCase):
+     self.git(self.merged, "config", "fetch.recurseSubmodules", "true")
+ 
+     self.updated = load_updater()
++    self.updated.TRUSTED_LEGACY_RELEASES = {}
+     self.updated.OVERLAY_MERGED = str(self.merged)
+     self.updated.METADATA_ROOT = self.root / 'metadata.git'
+     self.updated.FINALIZED = str(self.finalized)
+@@ -205,6 +206,137 @@ class TestVendoredUpdate(unittest.TestCase):
+     self.assertEqual(self.git(self.merged, 'rev-parse', 'HEAD'), self.initial_commit)
+     self.assertFalse(self.updater.params.get_bool('DoReboot'))
+ 
++  def make_legacy_release(self, branch='StarPilot'):
++    self.git(self.source, 'checkout', '-b', branch)
++    (self.source / 'upstream-sync.json').unlink()
++    files = {'prebuilt': '', 'launch_env.sh': 'export AGNOS_VERSION="19.8.1"\nexport AGNOS_ACCEPTED_VERSIONS="19.8.1 20.2.1"\n',
++             'launch_openpilot.sh': '#!/bin/sh\n', 'launch_chffrplus.sh': '#!/bin/sh\n',
++             'selfdrive/ui/lib/starpilot_version.py': 'STARPILOT_DISPLAY_VERSION = "6.7.9"\n',
++             'selfdrive/car/card.py': 'pass\n', 'selfdrive/modeld/modeld.py': 'pass\n'}
++    for name, content in files.items():
++      path = self.source / name
++      path.parent.mkdir(parents=True, exist_ok=True)
++      path.write_text(content)
++      if name in ('launch_openpilot.sh', 'launch_chffrplus.sh'):
++        path.chmod(0o755)
++    target = self.commit_source('Legacy prebuilt release')
++    self.updated.TRUSTED_LEGACY_RELEASES[branch] = frozenset({target})
++    return target
++
++  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
++  def test_download_legacy_starpilot_stages_without_reboot_or_flashing(self, _physical):
++    installed = self.root / 'installed'
++    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
++    self.updated.BASEDIR = str(installed)
++    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
++    target = self.make_legacy_release()
++    self.updated.AGNOS = True
++    self.updated.HARDWARE.get_os_version.return_value = '20.2.1'
++    with patch.object(self.updater, 'set_params'):
++      self.assertEqual(self.updater.fast_update('StarPilot', self.initial_commit, target, download_only=True), 'downloaded')
++    self.assertEqual(self.git(installed, 'rev-parse', 'HEAD'), self.initial_commit)
++    self.assertEqual(self.git(self.finalized, 'rev-parse', 'HEAD'), target)
++    self.assertTrue(self.updater.update_ready)
++    self.assertFalse(self.updater.params.get_bool('DoReboot'))
++    self.updated.handle_agnos_update.assert_not_called()
++    self.updated.HARDWARE.get_os_version.return_value = 'unverified'
++    with self.assertRaises(self.updated.FastUpdateIncompatible):
++      self.updated.validate_update_revision(str(self.finalized), 'HEAD', 'StarPilot')
++    self.updater.params.put('UpdaterState', 'idle')
++    self.updater.params.put_bool('IsOffroad', True)
++    settings = self.updater.install_settings
++    settings.save(True, '* * * * *', settings.read()['revision'], lambda: True)
++    with patch.object(self.updated, 'system_time_valid', return_value=True):
++      self.assertFalse(self.updater.maybe_install())
++    self.assertFalse(self.updater.params.get_bool('DoReboot'))
++
++  def test_legacy_wrong_os_or_incomplete_release_rejected_before_checkout(self):
++    target = self.make_legacy_release()
++    self.updater.params.put('UpdaterTargetBranch', 'StarPilot')
++    self.updated.HARDWARE.get_os_version.return_value = 'wrong'
++    with self.assertRaises(self.updated.FastUpdateIncompatible):
++      self.updater.fetch_update()
++    self.assertEqual(self.git(self.merged, 'rev-parse', 'HEAD'), self.initial_commit)
++    self.assertFalse(any(command[:2] == ['git', 'checkout'] for command in self.commands))
++    self.assertFalse((self.finalized / '.overlay_consistent').exists())
++    self.updated.HARDWARE.get_os_version.return_value = '19.8.1'
++    (self.source / 'prebuilt').unlink()
++    incomplete = self.commit_source('Incomplete legacy release')
++    self.updated.TRUSTED_LEGACY_RELEASES['StarPilot'] = frozenset({incomplete})
++    self.updater._branches_checked = False
++    with self.assertRaises(self.updated.FastUpdateIncompatible):
++      self.updater.fetch_update()
++    self.assertFalse((self.finalized / '.overlay_consistent').exists())
++    self.assertNotEqual(target, self.git(self.source, 'rev-parse', 'HEAD'))
++
++  def test_legacy_exception_does_not_accept_other_branch_or_malformed_manifest(self):
++    target = self.make_legacy_release()
++    self.updated.HARDWARE.get_os_version.return_value = '19.8.1'
++    with self.assertRaises(ValueError):
++      self.updated.validate_update_revision(str(self.source), target, 'other')
++    (self.source / 'upstream-sync.json').write_text('{}')
++    target = self.commit_source('Invalid modern manifest')
++    with self.assertRaises(ValueError):
++      self.updated.validate_update_revision(str(self.source), target, 'StarPilot')
++
++  def test_legacy_return_rejects_gitlinks_and_submodules(self):
++    self.make_legacy_release()
++    self.updated.HARDWARE.get_os_version.return_value = '19.8.1'
++    self.git(self.source, 'update-index', '--add', '--cacheinfo', f'160000,{self.initial_commit},unsafe')
++    self.git(self.source, 'commit', '-m', 'Invalid legacy gitlink')
++    self.updated.TRUSTED_LEGACY_RELEASES['StarPilot'] = frozenset({self.git(self.source, 'rev-parse', 'HEAD')})
++    with self.assertRaises(self.updated.FastUpdateIncompatible):
++      self.updated.validate_update_revision(str(self.source), 'HEAD', 'StarPilot')
++    self.git(self.source, 'rm', '--cached', 'unsafe')
++    (self.source / '.gitmodules').write_text('[submodule "unsafe"]\npath = unsafe\n')
++    self.commit_source('Invalid legacy submodule metadata')
++    self.updated.TRUSTED_LEGACY_RELEASES['StarPilot'] = frozenset({self.git(self.source, 'rev-parse', 'HEAD')})
++    with self.assertRaises(self.updated.FastUpdateIncompatible):
++      self.updated.validate_update_revision(str(self.source), 'HEAD', 'StarPilot')
++
++  def test_untrusted_legacy_commit_is_rejected_even_if_it_looks_complete(self):
++    target = self.make_legacy_release()
++    self.updated.TRUSTED_LEGACY_RELEASES.clear()
++    self.updated.HARDWARE.get_os_version.return_value = '19.8.1'
++    with self.assertRaises(ValueError):
++      self.updated.validate_update_revision(str(self.source), target, 'StarPilot')
++    audited = load_updater().TRUSTED_LEGACY_RELEASES
++    self.assertEqual(audited, {'StarPilot': frozenset({'4a553da9ac22a14e34513c011aed04c1e93b4619'})})
++
++  def test_reserved_readiness_marker_rejected_in_modern_and_legacy_trees(self):
++    for kind in ('modern-file', 'modern-symlink', 'legacy-file', 'legacy-symlink'):
++      with self.subTest(kind=kind):
++        if kind.startswith('legacy') and self.git(self.source, 'branch', '--show-current') != 'StarPilot':
++          self.make_legacy_release()
++          self.updated.HARDWARE.get_os_version.return_value = '19.8.1'
++        marker = self.source / '.overlay_consistent'
++        if kind.endswith('symlink'):
++          marker.symlink_to('prebuilt')
++        else:
++          marker.write_text('premature')
++        target = self.commit_source(kind)
++        branch = 'StarPilot' if kind.startswith('legacy') else BRANCH
++        self.updated.TRUSTED_LEGACY_RELEASES[branch] = frozenset({target})
++        with self.assertRaisesRegex(ValueError, 'reserved update readiness'):
++          self.updated.validate_update_revision(str(self.source), target, branch)
++        marker.unlink()
++        self.commit_source('Remove marker')
++
++  def test_copy_interruption_never_copies_an_untracked_readiness_marker(self):
++    marker = self.merged / '.overlay_consistent'
++    marker.symlink_to('panda/README.md')
++    original_copy = shutil.copy2
++    def fail_during_copy(src, dst, *args, **kwargs):
++      if Path(src).name == 'README.md':
++        raise OSError('interrupted copy')
++      return original_copy(src, dst, *args, **kwargs)
++    with patch.object(self.updated.shutil, 'copy2', side_effect=fail_during_copy):
++      with self.assertRaises(shutil.Error):
++        self.updated.finalize_update()
++    ready = self.finalized / '.overlay_consistent'
++    self.assertFalse(ready.exists())
++    self.assertFalse(ready.is_symlink())
++
+   def test_metadata_refresh_does_not_wake_background_but_check_does(self):
+     (self.source / 'new.txt').write_text('available')
+     self.commit_source('New update')
+diff --git a/openpilot/system/updated/updated.py b/openpilot/system/updated/updated.py
+index 07476941..384c60f0 100755
+--- a/openpilot/system/updated/updated.py
++++ b/openpilot/system/updated/updated.py
+@@ -25,7 +25,8 @@ from openpilot.common.vendor_manifest import validate_revision
+ from openpilot.starpilot.software.update_control import UpdaterControlError, UpdaterControlServer
+ from openpilot.starpilot.software.preferences import AUTOMATIC_DOWNLOADS, download_permitted
+ from openpilot.starpilot.software.fast_update import (
+-  FastUpdateError, FastUpdateIncompatible, fetch_files, required_os_version, run as run_git,
++  FastUpdateError, FastUpdateIncompatible, fetch_files, legacy_os_compatible, required_os_version, run as run_git,
++  validate_legacy_return,
+ )
+ from openpilot.starpilot.software.history import MAX_COMMITS, METADATA_ROOT, commit_history
+ from openpilot.starpilot.software.auto_install import InstallSettings, cron_matches, scheduled_restart
+@@ -161,7 +162,8 @@ def set_consistent_flag(consistent: bool) -> None:
+   os.sync()
+   consistent_file = Path(os.path.join(FINALIZED, ".overlay_consistent"))
+   if consistent:
+-    consistent_file.touch()
++    fd = os.open(consistent_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
++    os.close(fd)
+   elif not consistent:
+     consistent_file.unlink(missing_ok=True)
+   os.sync()
+@@ -261,6 +263,33 @@ def init_overlay() -> None:
+   cloudlog.info(f"git diff output:\n{git_diff}")
+ 
+ 
++# Audited legacy release, pinned by Git commit identity. Other releases must
++# satisfy the modern source manifest contract.
++TRUSTED_LEGACY_RELEASES = {'StarPilot': frozenset({'4a553da9ac22a14e34513c011aed04c1e93b4619'})}
++LEGACY_OS_MARKER = '.git/starpilot-retain-agnos'
++
++
++def validate_update_revision(repo: str, revision: str, branch: str) -> bool:
++  """Validate a modern source tree or an explicitly supported legacy return."""
++  def git(*args):
++    return run(['git', *args], repo, download='show' in args)
++
++  if git('ls-tree', revision, '--', '.overlay_consistent').strip():
++    raise ValueError('Source tree contains reserved update readiness marker')
++  manifest_entry = git('ls-tree', revision, '--', 'upstream-sync.json').strip()
++  commit = git('rev-parse', '--verify', f'{revision}^{{commit}}').strip()
++  if not manifest_entry and commit in TRUSTED_LEGACY_RELEASES.get(branch, ()):
++    validate_legacy_return(git, revision, branch)
++    launch = git('show', f'{revision}:launch_env.sh')
++    if not legacy_os_compatible(launch, HARDWARE.get_os_version()):
++      raise FastUpdateIncompatible('Update requires a different or unverified operating system')
++    return True
++  if manifest_entry.split()[:1] == ['100644']:
++    git('show', f'{revision}:upstream-sync.json')
++  validate_revision(repo, revision)
++  return False
++
++
+ def finalize_update(progress=None) -> None:
+   """Take the current OverlayFS merged view and finalize a copy outside of
+   OverlayFS, ready to be swapped-in at BASEDIR. Copy using shutil.copytree"""
+@@ -268,7 +297,8 @@ def finalize_update(progress=None) -> None:
+   # Remove the update ready flag and any old updates
+   cloudlog.info("creating finalized version of the overlay")
+   set_consistent_flag(False)
+-  validate_revision(OVERLAY_MERGED, "HEAD")
++  branch = run(["git", "symbolic-ref", "--short", "HEAD"], OVERLAY_MERGED).strip()
++  legacy_return = validate_update_revision(OVERLAY_MERGED, "HEAD", branch)
+ 
+   # Copy the merged overlay view and set the update ready flag
+   if os.path.exists(FINALIZED):
+@@ -302,13 +332,25 @@ def finalize_update(progress=None) -> None:
+       reported = now
+     return destination
+   started = time.monotonic()
+-  shutil.copytree(OVERLAY_MERGED, FINALIZED, symlinks=True, copy_function=copy_file)
++  def ignore_readiness_marker(directory, names):
++    return {'.overlay_consistent'} if Path(directory) == Path(OVERLAY_MERGED) else set()
++  shutil.copytree(OVERLAY_MERGED, FINALIZED, symlinks=True, copy_function=copy_file, ignore=ignore_readiness_marker)
+   cloudlog.event('update copy complete', duration=time.monotonic() - started, files=copied)
+ 
+   if progress is not None:
+     progress('Verifying the prepared update...', None)
+   run(["git", "reset", "--hard", "--no-recurse-submodules"], FINALIZED)
+-  validate_revision(FINALIZED, "HEAD")
++  validate_update_revision(FINALIZED, "HEAD", branch)
++  marker = Path(FINALIZED, LEGACY_OS_MARKER)
++  marker.unlink(missing_ok=True)
++  if legacy_return:
++    # Bind installation to the exact OS validated during staging. The launcher
++    # rechecks this before swapping trees, even for an ordinary manual reboot.
++    os_version = HARDWARE.get_os_version()
++    if not legacy_os_compatible(run(['git', 'show', 'HEAD:launch_env.sh'], FINALIZED), os_version):
++      raise FastUpdateIncompatible('Update requires a different or unverified operating system')
++    with marker.open('x') as f:
++      f.write(os_version + '\n')
+ 
+   if progress is not None:
+     progress('Syncing the prepared update to storage...', None)
+@@ -381,11 +423,11 @@ class Updater:
+       if (not idle() or self.params.get('UpdaterState') != 'idle' or
+           self._check_thread is not None or not self.update_ready or Path(FINALIZED, '.overlay_consistent').is_symlink()):
+         return False
+-      validate_revision(FINALIZED, 'HEAD')
++      validate_update_revision(FINALIZED, 'HEAD', self.get_branch(FINALIZED))
+       return True
+     try:
+       return scheduled_restart(self.params, self.install_settings, ready, parked, now)
+-    except (OSError, ValueError, subprocess.SubprocessError):
++    except (OSError, ValueError, FastUpdateError, subprocess.SubprocessError):
+       cloudlog.exception('Scheduled update restart was not admitted')
+       return False
+     finally:
+@@ -760,10 +802,9 @@ class Updater:
+     fetched_commit = selected_commit or self.branches[branch]
+     run(['git', 'fetch', '--progress', '--depth=1', '--filter=blob:none', '--no-tags', '--no-recurse-submodules',
+          'origin', f'+{fetched_commit}:refs/remotes/origin/{branch}'], OVERLAY_MERGED, progress=git_progress)
+-    # Fetch the manifest under the download guard before read-only validation.
+-    if run(["git", "ls-tree", fetched_commit, "--", "upstream-sync.json"], OVERLAY_MERGED).split()[:1] == ['100644']:
+-      run(["git", "show", f"{fetched_commit}:upstream-sync.json"], OVERLAY_MERGED, download=True)
+-    validate_revision(OVERLAY_MERGED, fetched_commit)
++    # Validate before checkout or executing any target code. Legacy returns are
++    # restricted to known release branches and must already support this OS.
++    legacy_return = validate_update_revision(OVERLAY_MERGED, fetched_commit, branch)
+     def git(*args, stdin=None):
+       return run(['git', *args], OVERLAY_MERGED, progress=git_progress, stdin=stdin)
+     fetch_files(git, fetched_commit)
+@@ -786,11 +827,11 @@ class Updater:
+       ["git", "clean", "-xdff"],
+     ]
+     r = [run(cmd, OVERLAY_MERGED, download=cmd[1] in ('checkout', 'reset'), progress=apply_progress) for cmd in cmds]
+-    validate_revision(OVERLAY_MERGED, "HEAD")
++    validate_update_revision(OVERLAY_MERGED, "HEAD", branch)
+     cloudlog.info("git reset success: %s", '\n'.join(r))
+ 
+     # TODO: show agnos download progress
+-    if AGNOS:
++    if AGNOS and not legacy_return:
+       handle_agnos_update()
+ 
+     # Create the finalized, ready-to-swap update
+-- 
+2.43.0
+
+
+From a15b58fc2e0fe90ee88b0c624ebb88264c0b50a4 Mon Sep 17 00:00:00 2001
+From: firestar5683 <168790843+firestar5683@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 13:43:55 -0600
+Subject: [PATCH 2/2] Block unresolved Elantra CAN interrupt faults
+
+---
+ openpilot/starpilot/aol/panda_faults.py         |  9 ---------
+ .../aol/tests/test_elantra_irq_admission.py     | 17 +++++++++++------
+ prebuilt.json                                   |  2 +-
+ 3 files changed, 12 insertions(+), 16 deletions(-)
+
+diff --git a/openpilot/starpilot/aol/panda_faults.py b/openpilot/starpilot/aol/panda_faults.py
+index 00f59258..aab07782 100644
+--- a/openpilot/starpilot/aol/panda_faults.py
++++ b/openpilot/starpilot/aol/panda_faults.py
+@@ -21,15 +21,6 @@ def _diagnostic_mask(cp):
+                          int(cp.flags) & int(HondaFlags.BOSCH) and qualified(cp, marked_only=True)) else 0
+     if cp.brand == 'hyundai':
+       from opendbc.car.hyundai.values import CAR, HyundaiFlags
+-      if cp.carFingerprint == CAR.HYUNDAI_ELANTRA_2021:
+-        from opendbc.car.hyundai.classic_scc_aol import qualified
+-        # Firmware latches this IRQ diagnostic without revoking native authority.
+-        # Limit compatibility to the recorded stock-SCC profile; keep raw faults;
+-        # native permission, receive health, relay and heartbeat remain required.
+-        recorded_flags = HyundaiFlags.SEND_LFA | HyundaiFlags.USE_FCA | HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.HAS_LDA_BUTTON
+-        return (1 << 2) if (str(cp.fingerprintSource) == 'fw' and int(cp.flags) == int(recorded_flags) and
+-                           len(cp.safetyConfigs) == 1 and int(cp.safetyConfigs[0].safetyParam) == 0xC00 and
+-                           cp.alternativeExperience == 32 and qualified(cp, marked_only=True)) else 0
+       if cp.carFingerprint != CAR.HYUNDAI_SONATA_HYBRID:
+         return 0
+       from opendbc.car.hyundai.classic_scc_aol import qualified
+diff --git a/openpilot/starpilot/aol/tests/test_elantra_irq_admission.py b/openpilot/starpilot/aol/tests/test_elantra_irq_admission.py
+index 543017bc..9052354a 100644
+--- a/openpilot/starpilot/aol/tests/test_elantra_irq_admission.py
++++ b/openpilot/starpilot/aol/tests/test_elantra_irq_admission.py
+@@ -1,4 +1,4 @@
+-"""Exact stock-SCC Elantra IRQ diagnostics retain native authority vetoes."""
++"""Elantra CAN interrupt faults block steering regardless of otherwise valid authority."""
+ from contextlib import ExitStack
+ from dataclasses import replace
+ from unittest import mock
+@@ -32,7 +32,8 @@ def recorded_cp():
+ @pytest.mark.parametrize('fault_source', ['none', 'panda', 'native', 'both'])
+ @pytest.mark.parametrize('full', [False, True])
+ @pytest.mark.parametrize('fault', ['none', 'rx', 'relay', 'denied', 'request', 'expired-wire'])
+-def test_recorded_irq_through_selfdrived_and_controls_keeps_native_vetoes(full, fault, fault_source):
++def test_recorded_irq_through_selfdrived_and_controls_blocks_faulted_steering(full, fault, fault_source):
++  irq = fault_source != 'none'
+   cp = recorded_cp()
+   before = cp.to_dict()
+   case = fixture.IoniqAvailabilityTests(methodName='runTest')
+@@ -69,16 +70,20 @@ def test_recorded_irq_through_selfdrived_and_controls_keeps_native_vetoes(full,
+       if fault == 'request':
+         options.update(native_request_lat=False, native_request_long=False)
+       axis, state, command = drive(tick, **options)
+-    if fault == 'none':
++    if fault == 'none' and not irq:
+       assert axis.lateralActive and command.latActive, 'HEALTHY_ELANTRA_AUTHORITY_REJECTED'
+       assert log.OnroadEvent.EventName.controlsMismatch not in sd.events.names
+       native = current_native(sd.sm, sd.CP, now_ns=stamp, axis_session_id=sd.aol_session_id)
+-      assert native is not None and native.pandaInventory[0].faults == (4 if fault_source in ('native', 'both') else 0)
+-      assert list(sd.sm['pandaStates'][0].faults) == ([log.PandaState.FaultType.interruptRateCan1] if fault_source in ('panda', 'both') else [])
++      assert native is not None and native.pandaInventory[0].faults == 0
++      assert list(sd.sm['pandaStates'][0].faults) == []
+       assert not axis.longitudinalActive and not command.longActive
+       assert state.enabled == full
+     else:
+       assert not axis.lateralActive and not command.latActive, 'ELANTRA_HARDWARE_FAULT_MUST_BLOCK'
++      if irq and fault == 'none':
++        assert log.OnroadEvent.EventName.controlsMismatch in sd.events.names
++        expected_faults = [log.PandaState.FaultType.interruptRateCan1] if fault_source in ('panda', 'both') else []
++        assert list(sd.sm['pandaStates'][0].faults) == expected_faults
+       assert not axis.longitudinalActive and not command.longActive
+     assert cp.to_dict() == before
+ 
+@@ -86,7 +91,7 @@ def test_recorded_irq_through_selfdrived_and_controls_keeps_native_vetoes(full,
+ @pytest.mark.parametrize('name,value', tuple(log.PandaState.FaultType.schema.enumerants.items()))
+ def test_other_and_mixed_faults_still_block(name, value):
+   cp = recorded_cp()
+-  expected = name != 'interruptRateCan1'
++  expected = True
+   assert blocking_fault_mask(1 << value, cp) == expected
+   assert blocking_fault_mask((1 << value) | 4, cp) == expected
+   assert blocking_fault_list([value], cp) == expected
+diff --git a/prebuilt.json b/prebuilt.json
+index 058ff3db..c34f20fa 100644
+--- a/prebuilt.json
++++ b/prebuilt.json
+@@ -1 +1 @@
+-{"protected_inventory_sha256": "076ebcb6467669ad24eb205e568af6beca661c29da55753b63f9967fe5cdcd49", "schema_version": 1}
++{"protected_inventory_sha256": "0edacc0cc483a2f6415617e8ca98c43e0b0106c2016ccb7490a5aae5f766bf1d", "schema_version": 1}
+-- 
+2.43.0
+
