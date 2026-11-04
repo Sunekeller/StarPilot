@@ -46,7 +46,7 @@ class ForteCardIntent(AolCardIntent):
     if invalid or fatal or rejected:
       self.physical_latch = False
       self.neutral_seen = self.neutral_seen and not self._lkas_down
-      if fatal and not (CS.steerFaultTemporary and not CS.steerFaultPermanent):
+      if fatal and not (CS.steerFaultTemporary and not CS.steerFaultPermanent and abs(CS.steeringAngleDeg) > 85):
         self.fault_rearm = True
         self.main_off_seen = False
     if not settings.enabled:
