@@ -348,6 +348,8 @@ struct SlcState @0xa1680744031fdb2d {
   upcomingBoundaryId @58 :Text;
   acceptedIsPreview @59 :Bool; # a temporary ceiling, ineligible for initializing SET
   wheelOverrideSince @60 :UInt64; # nonzero while a wheel tap may cross the current adjusted limit
+  wheelAdoptMonoTime @61 :UInt64; # Card's original wheel event timestamp, only on the approval frame
+  wheelAdoptTargetMps @62 :Float32; # exact adjusted SET approved for that event
   struct SourceReading {
     source @0 :Text;
     enabled @1 :Bool;
@@ -449,6 +451,7 @@ struct SlcAction @0x9ccdc8676701b412 {
   conditionalManual @5 :ConditionalManualAction;
   controllerCruise @6 :ControllerCruiseAction;
   controllerMode @7 :ControllerCruiseAction;
+  wheelAdoptMonoTime @8 :UInt64; # original timestamp of a qualified Adopt Speed Limit wheel event
 
   struct ControllerCruiseAction {
     version @0 :UInt16;

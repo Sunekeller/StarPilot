@@ -730,7 +730,7 @@ struct SlcState {
   struct ConditionalModeState;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(a1680744031fdb2d, 19, 22)
+    CAPNP_DECLARE_STRUCT_HEADER(a1680744031fdb2d, 21, 22)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -826,7 +826,7 @@ struct SlcAction {
 
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(9ccdc8676701b412, 4, 4)
+    CAPNP_DECLARE_STRUCT_HEADER(9ccdc8676701b412, 5, 4)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -4370,6 +4370,10 @@ public:
 
   inline  ::uint64_t getWheelOverrideSince() const;
 
+  inline  ::uint64_t getWheelAdoptMonoTime() const;
+
+  inline float getWheelAdoptTargetMps() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -4668,6 +4672,12 @@ public:
 
   inline  ::uint64_t getWheelOverrideSince();
   inline void setWheelOverrideSince( ::uint64_t value);
+
+  inline  ::uint64_t getWheelAdoptMonoTime();
+  inline void setWheelAdoptMonoTime( ::uint64_t value);
+
+  inline float getWheelAdoptTargetMps();
+  inline void setWheelAdoptTargetMps(float value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -5521,6 +5531,8 @@ public:
   inline bool hasControllerMode() const;
   inline  ::cereal::SlcAction::ControllerCruiseAction::Reader getControllerMode() const;
 
+  inline  ::uint64_t getWheelAdoptMonoTime() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -5588,6 +5600,9 @@ public:
   inline  ::cereal::SlcAction::ControllerCruiseAction::Builder initControllerMode();
   inline void adoptControllerMode(::capnp::Orphan< ::cereal::SlcAction::ControllerCruiseAction>&& value);
   inline ::capnp::Orphan< ::cereal::SlcAction::ControllerCruiseAction> disownControllerMode();
+
+  inline  ::uint64_t getWheelAdoptMonoTime();
+  inline void setWheelAdoptMonoTime( ::uint64_t value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -19756,6 +19771,34 @@ inline void SlcState::Builder::setWheelOverrideSince( ::uint64_t value) {
       ::capnp::bounded<18>() * ::capnp::ELEMENTS, value);
 }
 
+inline  ::uint64_t SlcState::Reader::getWheelAdoptMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<19>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t SlcState::Builder::getWheelAdoptMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<19>() * ::capnp::ELEMENTS);
+}
+inline void SlcState::Builder::setWheelAdoptMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<19>() * ::capnp::ELEMENTS, value);
+}
+
+inline float SlcState::Reader::getWheelAdoptTargetMps() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<40>() * ::capnp::ELEMENTS);
+}
+
+inline float SlcState::Builder::getWheelAdoptTargetMps() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<40>() * ::capnp::ELEMENTS);
+}
+inline void SlcState::Builder::setWheelAdoptTargetMps(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<40>() * ::capnp::ELEMENTS, value);
+}
+
 inline bool SlcState::SourceReading::Reader::hasSource() const {
   return !_reader.getPointerField(
       ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
@@ -21261,6 +21304,20 @@ inline void SlcAction::Builder::adoptControllerMode(
 inline ::capnp::Orphan< ::cereal::SlcAction::ControllerCruiseAction> SlcAction::Builder::disownControllerMode() {
   return ::capnp::_::PointerHelpers< ::cereal::SlcAction::ControllerCruiseAction>::disown(_builder.getPointerField(
       ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+
+inline  ::uint64_t SlcAction::Reader::getWheelAdoptMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t SlcAction::Builder::getWheelAdoptMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS);
+}
+inline void SlcAction::Builder::setWheelAdoptMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, value);
 }
 
 inline  ::uint16_t SlcAction::ControllerCruiseAction::Reader::getVersion() const {

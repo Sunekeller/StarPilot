@@ -41,7 +41,7 @@ class SlcActionDispatcher:
     self._feedback_sequence = 0
     self._feedback_started_ns = 0
 
-  def dispatch(self, request: SlcUiRequest) -> bool:
+  def dispatch(self, request: SlcUiRequest, *, wheel_observed_ns: int = 0) -> bool:
     if not _positive_number(request.candidate_speed_mps):
       return False
     now_ns = self.clock()
@@ -97,6 +97,8 @@ class SlcActionDispatcher:
       action.decisionId = decision_id
       action.presentationId = presentation_id
       action.kind = request.kind.value
+      if request.kind == SlcActionKind.ADOPT:
+        action.wheelAdoptMonoTime = wheel_observed_ns
       self.publisher.send("slcAction", message)
     except (OSError, RuntimeError, ValueError):
       return False

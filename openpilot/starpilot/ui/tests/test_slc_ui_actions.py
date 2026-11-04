@@ -238,6 +238,18 @@ class TestSlcDispatcher(unittest.TestCase):
     self.assertFalse(dispatcher.dispatch(request))
     self.assertEqual(publisher.send.call_count, 1)
 
+  def test_adopt_preserves_the_wheel_timestamp_on_the_wire(self):
+    current = native_state(pending=False)
+    request = SlcUiRequest(SlcActionKind.ADOPT, "drive-session", 7, 9, 22.0)
+    wheel_ns = NOW - 30_000_000
+    for options, expected in (({}, 0), ({"wheel_observed_ns": wheel_ns}, wheel_ns)):
+      publisher = Mock()
+      dispatcher = SlcActionDispatcher(publisher, lambda _: current, lambda: NOW)
+      self.assertTrue(dispatcher.dispatch(request, **options))
+      message = publisher.send.call_args.args[1]
+      self.assertEqual(message.logMonoTime, NOW)
+      self.assertEqual(message.slcAction.wheelAdoptMonoTime, expected)
+
   def test_failed_publish_does_not_acknowledge_or_mutate_state(self):
     current = native_state()
     publisher = Mock()

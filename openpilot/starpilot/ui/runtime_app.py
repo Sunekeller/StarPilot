@@ -580,7 +580,8 @@ class StarShellSession:
           state = self._live_slc_message(now_ns)
           if state is not None and not state.hasPending:
             self.slc_actions.dispatch(SlcUiRequest(SlcActionKind.ADOPT, str(state.sessionId), int(state.decisionId),
-                                                  int(state.presentationId), float(state.speedLimit)))
+                                                  int(state.presentationId), float(state.speedLimit)),
+                                      wheel_observed_ns=command.observed_ns)
         elif command.action in (11, 12, 13):
           slot = self.favorites_owner.snapshot().slots[command.action - 11]
           if slot.available and slot.request is not None:

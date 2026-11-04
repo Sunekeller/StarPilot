@@ -108,17 +108,14 @@ def engagement_target(sm, observation, producer_session: str, now_ns: int, *, af
   return (float(current.presentationAdjustedLimit), current) if current is not None else (None, None)
 
 
-def adopted_target(sm, now_ns: int, *, after_ns: int = 0) -> tuple[int, float | None] | None:
-  """Return the published action sequence and, for an adopt, its accepted adjusted limit."""
+def adopted_target(sm, now_ns: int, *, wheel_ns: int) -> float | None:
+  """Read the one-frame SET approval for this Card's still-pending wheel event."""
   state = _state(sm, now_ns)
-  if state is None or int(state.frameMonoTime) <= after_ns:
+  if (state is None or int(state.wheelAdoptMonoTime) != wheel_ns or
+      not 0 < wheel_ns <= int(state.frameMonoTime)):
     return None
-  sequence = int(state.actionSequenceId)
-  if str(state.actionStatus) != 'adopt' or not state.hasAcceptedAdjustedLimit or state.acceptedIsPreview:
-    return sequence, None
-  target = float(state.acceptedAdjustedLimit)
-  valid = finite_speed(target) and V_CRUISE_MIN / 3.6 - 1e-5 <= target <= V_CRUISE_MAX / 3.6 + 1e-5
-  return sequence, target if valid else None
+  target = float(state.wheelAdoptTargetMps)
+  return target if finite_speed(target) and V_CRUISE_MIN / 3.6 - 1e-5 <= target <= V_CRUISE_MAX / 3.6 + 1e-5 else None
 
 
 def pending_confirmation(sm, now_ns: int, *, long_active: bool,

@@ -17,6 +17,7 @@ from openpilot.selfdrive.car import card, cruise
 from openpilot.selfdrive.controls.plannerd import queue_cruise_event
 from openpilot.starpilot.speed_limits.acceptance import AcceptedLimit, Candidate, IdentityKind, ObservationIdentity
 from openpilot.starpilot.speed_limits import physical_actions
+from openpilot.starpilot.speed_limits.planner_host import action_from_message
 from openpilot.starpilot.speed_limits.runtime import Action, CruiseEvent, Runtime
 from openpilot.starpilot.speed_limits.runtime_settings import parse
 from openpilot.starpilot.speed_limits.speed_domain import OffsetBand, OffsetSchedule
@@ -227,6 +228,7 @@ def test_card_publication_routes_engagement_to_runtime_and_preserves_later_confi
   assert events[0].command_id == 0
   first = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=events.popleft())
   assert first.message.slcState.hasAccepted
+  assert first.message.slcState.wheelAdoptMonoTime == 0
   sm.advance(START + 50_000_000)
   sm['slcDashboardObservation'].speedMps = 55 * CV.MPH_TO_MS
   later = runtime.step(sm, cp, now_ns=START + 50_000_000)
@@ -407,44 +409,92 @@ def test_delayed_engagement_is_bound_to_current_limit(current, resume):
     assert state.pendingSinceMonoTime == pending.pendingSinceMonoTime
 
 
-@pytest.mark.parametrize('engaged', [False, True])
-def test_acknowledged_wheel_adopt_moves_set_once(engaged):
+def wheel_approval(runtime, sm, cp, *, wheel_ns, now):
+  request = messaging.new_message('slcAction', logMonoTime=now)
+  request.slcAction = {'sessionId': runtime.session_id, 'sequenceId': now, 'kind': 'adopt',
+                       'presentationId': sm['slcState'].presentationId, 'wheelAdoptMonoTime': wheel_ns}
+  sm.advance(now)
+  sm['slcDashboardObservation'].validUntilMonoTime = now + 1_000_000_000
+  state = runtime.step(sm, cp, now_ns=now, request=action_from_message(request)[1]).message.slcState
+  assert state.actionStatus == 'adopt' and state.wheelAdoptMonoTime == wheel_ns
+  return state
+
+
+@pytest.mark.parametrize('case', ['valid', 'disengaged', 'newer-set', 'held-set-button', 'expired', 'different-press', 'no-local-press'])
+def test_wheel_adopt_only_applies_to_its_own_eligible_press(case):
   runtime, sm, cp = drive(limit=45., offset=5., confirmation=True)
   instance = owner(sm, cp, match=False)
   engage(instance)
-  before = instance.v_cruise_helper.v_cruise_kph
-  assert before != cruise.slc_target_kph(50 * CV.MPH_TO_MS, False)
-  shown = sm['slcState']
-  instance.apply_slc_adopt(START + 10_000_000, host_control_enabled=engaged)
-  assert instance.slc_adopt_sequence == 0 and instance.v_cruise_helper.v_cruise_kph == before
+  helper = instance.v_cruise_helper
+  wheel_ns = START + 20_000_000
+  if case != 'no-local-press':
+    instance.slc_wheel_adopt = (wheel_ns + int(case == 'different-press'), helper.v_cruise_kph)
+  now = wheel_ns + (240_000_000 if case == 'expired' else 30_000_000)
+  sm.data['slcState'] = wheel_approval(runtime, sm, cp, wheel_ns=wheel_ns, now=now)
+  if case == 'newer-set':
+    helper.v_cruise_kph -= 1.6
+  elif case == 'held-set-button':
+    sm['carState'].buttonEvents = [car.CarState.ButtonEvent(type='decelCruise', pressed=True)]
+    helper.update_v_cruise(sm['carState'], True, False)
+  before = helper.v_cruise_kph
+  read_ns = wheel_ns + 250_000_001 if case == 'expired' else now
+  instance.apply_slc_adopt(read_ns, host_control_enabled=case != 'disengaged')
+  assert helper.v_cruise_kph == (cruise.slc_target_kph(50 * CV.MPH_TO_MS, False) if case == 'valid' else before)
+  if case == 'valid':
+    assert instance.slc_wheel_adopt is None
+    helper.v_cruise_kph = before
+    instance.apply_slc_adopt(read_ns, host_control_enabled=True)
+    assert helper.v_cruise_kph == before
 
-  now = START + 50_000_000
-  sm.advance(now)
-  sm['slcDashboardObservation'].validUntilMonoTime = now + 1_000_000_000
-  adopted = runtime.step(sm, cp, now_ns=now, request=Action(runtime.session_id, now, 0, shown.presentationId, 'adopt'))
-  state = adopted.message.slcState
-  assert state.actionStatus == 'adopt' and state.hasAcceptedAdjustedLimit
-  sm.data['slcState'] = state
-  sm.logMonoTime['slcState'] = now
-  instance.apply_slc_adopt(now, host_control_enabled=engaged)
-  assert instance.v_cruise_helper.v_cruise_kph == (cruise.slc_target_kph(50 * CV.MPH_TO_MS, False) if engaged else before)
 
-  instance.v_cruise_helper.v_cruise_kph = 100.
-  instance.apply_slc_adopt(now, host_control_enabled=engaged)
-  assert instance.v_cruise_helper.v_cruise_kph == 100.
-
-
-def test_receipt_present_before_card_starts_does_not_move_set():
-  runtime, sm, cp = drive(limit=45., offset=5., confirmation=True)
-  now = START + 50_000_000
-  sm.advance(now)
-  sm['slcDashboardObservation'].validUntilMonoTime = now + 1_000_000_000
-  shown = sm['slcState']
-  state = runtime.step(sm, cp, now_ns=now, request=Action(runtime.session_id, now, 0, shown.presentationId, 'adopt')).message.slcState
-  sm.data['slcState'] = state
-  sm.logMonoTime['slcState'] = now
+def test_next_automatic_limit_cannot_reuse_wheel_approval():
+  runtime, sm, cp = drive(limit=45., offset=5., confirmation=False)
   instance = owner(sm, cp, match=False)
-  engage(instance, now=now)
+  engage(instance)
   before = instance.v_cruise_helper.v_cruise_kph
+  wheel_ns = START + 20_000_000
+  instance.slc_wheel_adopt = (wheel_ns, before)
+  approved = wheel_approval(runtime, sm, cp, wheel_ns=wheel_ns, now=START + 50_000_000)
+  assert approved.wheelAdoptTargetMps == pytest.approx(50 * CV.MPH_TO_MS)
+
+  now = START + 100_000_000
+  sm.advance(now)
+  sm['slcDashboardObservation'].speedMps = 50 * CV.MPH_TO_MS
+  sm['slcDashboardObservation'].episode += 1
+  state = runtime.step(sm, cp, now_ns=now).message.slcState
+  assert state.actionSequenceId == approved.actionSequenceId and state.actionStatus == 'adopt'
+  assert state.acceptedAdjustedLimit == pytest.approx(55 * CV.MPH_TO_MS)
+  assert state.wheelAdoptMonoTime == 0
+  sm.data['slcState'] = state
   instance.apply_slc_adopt(now, host_control_enabled=True)
   assert instance.v_cruise_helper.v_cruise_kph == before
+
+
+@pytest.mark.parametrize('proof', ['qualified', 'expired', 'unacknowledged', 'lateral-only', 'missing'])
+def test_stopped_set_matches_limit_before_longitudinal_activates(proof):
+  _, sm, cp = drive(limit=40., offset=0., confirmation=False)
+  assert sm['slcState'].hasAccepted
+  now = START + 10_000_000
+  if proof != 'missing':
+    sm.data['aolAxisState'] = messaging.new_message('aolAxisState').aolAxisState
+    axis = sm['aolAxisState']
+    axis.sessionId, axis.qualified = 'axis', True
+    axis.nativeAcknowledged = proof != 'unacknowledged'
+    axis.desiredLongitudinal = proof != 'lateral-only'
+    axis.observedMonoTime = START
+    axis.validUntilMonoTime = now - 1 if proof == 'expired' else now + 10_000_000
+    sm.valid['aolAxisState'] = sm.alive['aolAxisState'] = True
+    sm.seen = {'aolAxisState': True}
+  sm.advance(now)
+  if proof != 'missing':
+    sm.logMonoTime['aolAxisState'] = START
+  sm['carControl'].enabled = True
+  sm['carState'].vEgo = sm['carState'].vEgoCluster = 0.
+  sm['carState'].standstill = sm['carState'].brakePressed = True
+  instance = owner(sm, cp, resume=False)
+  instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 64.4
+  with patch.object(card.time, 'monotonic_ns', return_value=now):
+    instance.update_cruise_speed(sm['carState'])
+  expected = 64.4 if proof == 'qualified' else cruise.V_CRUISE_INITIAL
+  assert instance.v_cruise_helper.v_cruise_kph == expected
+  assert bool(instance.slc_receipts) == (proof == 'qualified')

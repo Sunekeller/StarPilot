@@ -92,7 +92,7 @@ from openpilot.starpilot.vehicle_selection import startup_candidate
 from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
 from openpilot.starpilot.controller_extensions import configure_controller, observe_controller_can
 from openpilot.starpilot.vehicle_startup import VehicleStartupOwner
-from openpilot.starpilot.controllers.wheel_actions import WheelPublisher, key_for
+from openpilot.starpilot.controllers.wheel_actions import LIFETIME_NS as WHEEL_ACTION_MAX_AGE_NS, WheelPublisher, key_for
 from openpilot.starpilot.controllers.cruise_action import CruiseActionConsumer, eligible as cruise_action_eligible
 from openpilot.starpilot.schema_cache import get_cache, prewarm_cache_contracts, put_cache
 
@@ -582,8 +582,6 @@ class Car:
       wheel_context = slc_physical.wheel_override_context(self.sm, now_ns, after_ns=floor_ns,
         selected_kph=cruise_helper.v_cruise_kph, is_metric=self.is_metric)
     self.update_cruise_speed(CS, pending, wheel_context=wheel_context)
-    if self.slc_replay:
-      self.apply_slc_adopt(now_ns, host_control_enabled=host_control_enabled, after_ns=floor_ns)
     if self.controller_cruise_sock is not None:
       for _ in range(8):
         request = messaging.recv_one_or_none(self.controller_cruise_sock)
@@ -592,6 +590,8 @@ class Car:
         self.controller_cruise_consumer.apply(request, self.CP, CS, self.sm, self.v_cruise_helper,
                                              now_ns=now_ns, is_metric=self.is_metric,
                                              enabled=bool(host_control_enabled and can_rcv_valid and not self.params.get_bool("SafeMode")))
+    if self.slc_replay:
+      self.apply_slc_adopt(now_ns, host_control_enabled=host_control_enabled, after_ns=floor_ns)
     consumed = self.v_cruise_helper.slc_consumed_button
     if self.aol_card_intent is not None:
       if self.aol_process_fault_context is None:
@@ -799,16 +799,20 @@ class Car:
     return CS, RD
 
   def apply_slc_adopt(self, now_ns: int, *, host_control_enabled: bool, after_ns: int = 0) -> None:
-    adopted = slc_physical.adopted_target(self.sm, now_ns, after_ns=after_ns)
-    if adopted is None:
+    pending = getattr(self, 'slc_wheel_adopt', None)
+    if pending is None:
       return
-    sequence, target = adopted
-    previous = getattr(self, 'slc_adopt_sequence', None)
-    self.slc_adopt_sequence = sequence
-    # The first receipt seen may predate this process; only a newly acknowledged adopt moves SET.
-    if (previous is not None and sequence != previous and target is not None and host_control_enabled and
-        getattr(self, 'slc_control_enabled', False) and self.v_cruise_helper.v_cruise_initialized):
-      self.v_cruise_helper.apply_slc_target(target, self.is_metric)
+    wheel_ns, selected_kph = pending
+    helper = self.v_cruise_helper
+    if (not after_ns < wheel_ns <= now_ns <= wheel_ns + WHEEL_ACTION_MAX_AGE_NS or
+        not host_control_enabled or not self.slc_control_enabled or
+        not helper.v_cruise_initialized or helper.v_cruise_kph != selected_kph or any(helper.button_timers.values())):
+      self.slc_wheel_adopt = None
+      return
+    target = slc_physical.adopted_target(self.sm, now_ns, wheel_ns=wheel_ns)
+    if target is not None:
+      self.slc_wheel_adopt = None
+      helper.apply_slc_target(target, self.is_metric)
 
   def update_cruise_speed(self, CS, pending=None, *, wheel_context: SlcWheelContext | None = None):
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric, pending,
@@ -822,12 +826,17 @@ class Car:
           CS.canValid and not CS.canTimeout and CS.cruiseState.available and
           self.sm.valid['carControl'] and self.sm.alive['carControl'] and
           0 < int(self.sm.logMonoTime['carControl']) <= now_ns and
-          now_ns - int(self.sm.logMonoTime['carControl']) <= slc_physical.STATE_MAX_AGE_NS and
-          (self.sm['carControl'].longActive or CS.gasPressed)):
-        evidence = getattr(self.CI.CS, 'dashboard_limit', None)
-        target, initial = slc_physical.engagement_target(
-          self.sm, evidence.observation if evidence is not None else None, self.slc_producer_session,
-          now_ns, after_ns=getattr(self, 'slc_source_floor_ns', 0))
+          now_ns - int(self.sm.logMonoTime['carControl']) <= slc_physical.STATE_MAX_AGE_NS):
+        long_requested = self.sm['carControl'].longActive or CS.gasPressed
+        if not long_requested and 'aolAxisState' in self.sm.logMonoTime:
+          # AOL can acknowledge the request before longitudinal actuators become active.
+          axis = current_axis(self.sm, now_ns=now_ns)
+          long_requested = axis is not None and axis.nativeAcknowledged and axis.desiredLongitudinal
+        if long_requested:
+          evidence = getattr(self.CI.CS, 'dashboard_limit', None)
+          target, initial = slc_physical.engagement_target(
+            self.sm, evidence.observation if evidence is not None else None, self.slc_producer_session,
+            now_ns, after_ns=getattr(self, 'slc_source_floor_ns', 0))
       adopted = self.v_cruise_helper.initialize_v_cruise(
         self.CS_prev, self.experimental_mode, resume=self.vehicle_startup.consume_cruise_resume(), initial_speed=self.initial_cruise_speed,
         slc_target_mps=target, is_metric=self.is_metric)
@@ -1107,6 +1116,9 @@ class Car:
 
     wheel = getattr(self, 'wheel_publisher', None)
     if wheel is not None:
+      if (getattr(self, 'slc_control_enabled', False) and self.CC_prev.enabled and self.sm['carControl'].enabled and
+          any(action == 10 for _, action in self.wheel_commands)):
+        self.slc_wheel_adopt = (int(cs_send.logMonoTime), self.v_cruise_helper.v_cruise_kph)
       wheel.publish(self.wheel_commands, self.CP, self.pm, now_ns=int(cs_send.logMonoTime),
                     drive_id=int(self.sm['deviceState'].startedMonoTime), source_car_ns=int(cs_send.logMonoTime),
                     source_control_ns=int(self.sm.logMonoTime['carControl']))

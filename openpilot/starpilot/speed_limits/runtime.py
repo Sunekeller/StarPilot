@@ -8,6 +8,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX
 from openpilot.starpilot.aol.runtime import current_axis
+from openpilot.starpilot.controllers.wheel_actions import LIFETIME_NS as WHEEL_ACTION_MAX_AGE_NS
 from openpilot.starpilot.speed_limits import acceptance as acc
 from openpilot.starpilot.speed_limits import action_arbitration as arb
 from openpilot.starpilot.speed_limits import composition as comp
@@ -85,6 +86,7 @@ class Action:
   presentation_id: int
   kind: str
   observed_ns: int | None = None
+  wheel_observed_ns: int = 0
 
 
 @dataclass(frozen=True)
@@ -492,6 +494,12 @@ class Runtime:
     message = self._message(now_ns, result, sm, frame)
     if action_result is not None and action_result.status == 'resolved':
       self._ui_receipt = (request.sequence_id, str(message.slcState.actionStatus)) if request is not None else None
+      state = message.slcState
+      if (request is not None and request.kind == 'adopt' and state.actionStatus == 'adopt' and
+          0 < request.wheel_observed_ns <= (request.observed_ns or 0) <= now_ns <= request.wheel_observed_ns + WHEEL_ACTION_MAX_AGE_NS and
+          frame.authority.can_control and not frame.host.force_decel and state.hasAcceptedAdjustedLimit and not state.acceptedIsPreview):
+        state.wheelAdoptMonoTime = request.wheel_observed_ns
+        state.wheelAdoptTargetMps = state.acceptedAdjustedLimit
     receipt = getattr(self, '_ui_receipt', None)
     if receipt is not None:
       message.slcState.actionSequenceId, message.slcState.actionStatus = receipt

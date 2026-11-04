@@ -205,8 +205,9 @@ cruise stays engaged preserves an active override. Confirmation, Curve Speed and
 Force Stop take priority over this gesture.
 
 The configured wheel action can explicitly adopt the displayed current limit. Once
-the planner acknowledges the adopt, card moves software SET to the adjusted limit
-while cruise is engaged; acceptance alone still never rewrites SET. On Hyundai
+the planner approves that specific press, card moves software SET to the approved
+adjusted limit while cruise is engaged. A newer SET change cancels the write. If
+card misses the approval frame, only SLC acceptance applies. On Hyundai
 independent-button cars, cruise MAIN assigned to adopt is no longer also the
 physical AOL lateral toggle. The onroad screen adds no new control.
 

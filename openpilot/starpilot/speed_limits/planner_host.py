@@ -134,7 +134,7 @@ def action_from_message(event):
   request = event.slcAction
   observed_ns = int(event.logMonoTime)
   return observed_ns, Action(str(request.sessionId), int(request.sequenceId), int(request.decisionId),
-                             int(request.presentationId), str(request.kind), observed_ns)
+                             int(request.presentationId), str(request.kind), observed_ns, int(request.wheelAdoptMonoTime))
 
 
 def current_cruise_event(events, now_ns: int, *, car_state_ns: int | None = None):
