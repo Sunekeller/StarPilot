@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 from openpilot.starpilot.lateral.controller_selection import ControllerMode, default_selection, policy_for
 from openpilot.starpilot.lateral.torque_shaping import KP as STARPILOT_KP
+from openpilot.starpilot.lateral import manual_gains
 from openpilot.starpilot.lateral.torque_extension import apply_turn_assist, create_extension, create_turn_assist
 from openpilot.starpilot.flm import live as flm
 
@@ -54,7 +55,10 @@ class LatControlTorque(LatControl):
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
-    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
+    gains = manual_gains.load({'KP': KP, 'KI': KI, 'JERK_GAIN': JERK_GAIN, 'FRICTION_THRESHOLD': 0.05})
+    self.jerk_gain = gains['JERK_GAIN']
+    self.friction_threshold = gains['FRICTION_THRESHOLD']
+    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP[:-1] + [gains['KP']]], gains['KI'], rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
@@ -136,13 +140,13 @@ class LatControlTorque(LatControl):
     ff = gravity_adjusted_future_lateral_accel
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
     ff -= self.torque_params.latAccelOffset
-    threshold = flm.base_threshold(self.flm_surface, CS.vEgo, 0.05)
+    threshold = flm.base_threshold(self.flm_surface, CS.vEgo, self.friction_threshold)
     ff, threshold = flm.stages(self.flm_surface, CS, setpoint, desired_lateral_jerk, ff, threshold)
     if friction_policy is not None:
       threshold = friction_policy.friction_threshold(CS.vEgo, setpoint, desired_lateral_jerk)
     ff, threshold = auto_stages.apply_stages(self, CS, setpoint, desired_lateral_jerk, ff, threshold,
       active=active, limited=steer_limited_by_safety or curvature_limited, curvature_limited=curvature_limited)
-    selected_friction = self.friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, threshold, CS, setpoint)
+    selected_friction = self.friction(error + self.jerk_gain * desired_lateral_jerk, lateral_accel_deadzone, threshold, CS, setpoint)
     ff += auto_stages.apply_selected_friction(self, CS, setpoint, float(selected_friction),
       active=active, limited=steer_limited_by_safety or curvature_limited, curvature_limited=curvature_limited)
 
