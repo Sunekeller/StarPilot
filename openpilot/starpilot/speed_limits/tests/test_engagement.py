@@ -405,3 +405,46 @@ def test_delayed_engagement_is_bound_to_current_limit(current, resume):
     assert state.presentationId != event.presentation_id
     assert state.decisionId == pending.decisionId
     assert state.pendingSinceMonoTime == pending.pendingSinceMonoTime
+
+
+@pytest.mark.parametrize('engaged', [False, True])
+def test_acknowledged_wheel_adopt_moves_set_once(engaged):
+  runtime, sm, cp = drive(limit=45., offset=5., confirmation=True)
+  instance = owner(sm, cp, match=False)
+  engage(instance)
+  before = instance.v_cruise_helper.v_cruise_kph
+  assert before != cruise.slc_target_kph(50 * CV.MPH_TO_MS, False)
+  shown = sm['slcState']
+  instance.apply_slc_adopt(START + 10_000_000, host_control_enabled=engaged)
+  assert instance.slc_adopt_sequence == 0 and instance.v_cruise_helper.v_cruise_kph == before
+
+  now = START + 50_000_000
+  sm.advance(now)
+  sm['slcDashboardObservation'].validUntilMonoTime = now + 1_000_000_000
+  adopted = runtime.step(sm, cp, now_ns=now, request=Action(runtime.session_id, now, 0, shown.presentationId, 'adopt'))
+  state = adopted.message.slcState
+  assert state.actionStatus == 'adopt' and state.hasAcceptedAdjustedLimit
+  sm.data['slcState'] = state
+  sm.logMonoTime['slcState'] = now
+  instance.apply_slc_adopt(now, host_control_enabled=engaged)
+  assert instance.v_cruise_helper.v_cruise_kph == (cruise.slc_target_kph(50 * CV.MPH_TO_MS, False) if engaged else before)
+
+  instance.v_cruise_helper.v_cruise_kph = 100.
+  instance.apply_slc_adopt(now, host_control_enabled=engaged)
+  assert instance.v_cruise_helper.v_cruise_kph == 100.
+
+
+def test_receipt_present_before_card_starts_does_not_move_set():
+  runtime, sm, cp = drive(limit=45., offset=5., confirmation=True)
+  now = START + 50_000_000
+  sm.advance(now)
+  sm['slcDashboardObservation'].validUntilMonoTime = now + 1_000_000_000
+  shown = sm['slcState']
+  state = runtime.step(sm, cp, now_ns=now, request=Action(runtime.session_id, now, 0, shown.presentationId, 'adopt')).message.slcState
+  sm.data['slcState'] = state
+  sm.logMonoTime['slcState'] = now
+  instance = owner(sm, cp, match=False)
+  engage(instance, now=now)
+  before = instance.v_cruise_helper.v_cruise_kph
+  instance.apply_slc_adopt(now, host_control_enabled=True)
+  assert instance.v_cruise_helper.v_cruise_kph == before

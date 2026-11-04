@@ -204,8 +204,11 @@ limit is accepted, or engagement ends. A display-unit change or a stop while
 cruise stays engaged preserves an active override. Confirmation, Curve Speed and
 Force Stop take priority over this gesture.
 
-The configured wheel action can explicitly adopt the displayed current limit. It
-updates SLC acceptance, not SET. The onroad screen adds no new control.
+The configured wheel action can explicitly adopt the displayed current limit. Once
+the planner acknowledges the adopt, card moves software SET to the adjusted limit
+while cruise is engaged; acceptance alone still never rewrites SET. On Hyundai
+independent-button cars, cruise MAIN assigned to adopt is no longer also the
+physical AOL lateral toggle. The onroad screen adds no new control.
 
 ## Source and action qualification
 

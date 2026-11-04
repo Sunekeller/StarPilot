@@ -1288,10 +1288,11 @@ class StarShellSession:
         not any(p.ignitionLine or p.ignitionCan for p in pandas)):
       return None
     after = ui.started_frame
-    car = current_message(ui.sm, "carState", now_ns, after_frame=after)
-    control = current_message(ui.sm, "carControl", now_ns, after_frame=after)
-    controls = current_message(ui.sm, "controlsState", now_ns, after_frame=after)
-    selfdrive = current_message(ui.sm, "selfdriveState", now_ns, after_frame=after)
+    # plannerd re-validates every action; 100 Hz context only needs to survive one UI frame here.
+    car = display_message(ui.sm, "carState", now_ns, after_frame=after)
+    control = display_message(ui.sm, "carControl", now_ns, after_frame=after)
+    controls = display_message(ui.sm, "controlsState", now_ns, after_frame=after)
+    selfdrive = display_message(ui.sm, "selfdriveState", now_ns, after_frame=after)
     cp = ui.CP
     if (car is None or not getattr(car, "canValid", False) or getattr(car, "canTimeout", True) or
         control is None or controls is None or selfdrive is None or cp is None):

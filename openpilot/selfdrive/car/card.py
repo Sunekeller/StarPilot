@@ -582,6 +582,8 @@ class Car:
       wheel_context = slc_physical.wheel_override_context(self.sm, now_ns, after_ns=floor_ns,
         selected_kph=cruise_helper.v_cruise_kph, is_metric=self.is_metric)
     self.update_cruise_speed(CS, pending, wheel_context=wheel_context)
+    if self.slc_replay:
+      self.apply_slc_adopt(now_ns, host_control_enabled=host_control_enabled, after_ns=floor_ns)
     if self.controller_cruise_sock is not None:
       for _ in range(8):
         request = messaging.recv_one_or_none(self.controller_cruise_sock)
@@ -795,6 +797,18 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def apply_slc_adopt(self, now_ns: int, *, host_control_enabled: bool, after_ns: int = 0) -> None:
+    adopted = slc_physical.adopted_target(self.sm, now_ns, after_ns=after_ns)
+    if adopted is None:
+      return
+    sequence, target = adopted
+    previous = getattr(self, 'slc_adopt_sequence', None)
+    self.slc_adopt_sequence = sequence
+    # The first receipt seen may predate this process; only a newly acknowledged adopt moves SET.
+    if (previous is not None and sequence != previous and target is not None and host_control_enabled and
+        getattr(self, 'slc_control_enabled', False) and self.v_cruise_helper.v_cruise_initialized):
+      self.v_cruise_helper.apply_slc_target(target, self.is_metric)
 
   def update_cruise_speed(self, CS, pending=None, *, wheel_context: SlcWheelContext | None = None):
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric, pending,
