@@ -12,6 +12,7 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.starpilot.schema_cache import get_cache, prewarm_cache_contracts, put_cache
+from openpilot.starpilot.lateral import manual_gains
 from openpilot.common.realtime import config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose, fft_next_good_size, parabolic_peak_interp
@@ -184,6 +185,8 @@ class LateralLagEstimator:
     self.okay_window_sec = okay_window_sec
     self.min_recovery_buffer_sec = min_recovery_buffer_sec
     self.initial_lag = CP.steerActuatorDelay + 0.2
+    # Manual steering delay from /data/starpilot_tune.json; 0 means use the learned value
+    self.manual_lag = manual_gains.load({"LAT_DELAY": 0.0})["LAT_DELAY"]
     self.block_size = block_size
     self.block_count = block_count
     self.min_valid_block_count = min_valid_block_count
@@ -239,6 +242,9 @@ class LateralLagEstimator:
       lateralDelay.lateralDelay = min(MAX_LAG, max(MIN_LAG, valid_mean_lag))
     else:
       lateralDelay.lateralDelay = self.initial_lag
+    if self.manual_lag > 0.0:
+      lateralDelay.lateralDelay = self.manual_lag
+      lateralDelay.status = log.LateralDelay.Status.estimated
 
     if not np.isnan(current_mean_lag) and not np.isnan(current_std):
       lateralDelay.lateralDelayEstimate = current_mean_lag

@@ -15,6 +15,7 @@ LIMITS = {
   "KI": (0.0, 1.0, 0.05),
   "JERK_GAIN": (0.0, 0.6, 0.05),
   "FRICTION_THRESHOLD": (0.005, 0.2, 0.005),
+  "LAT_DELAY": (0.0, 0.6, 0.01),  # seconds; 0 = use the learned steering delay
 }
 
 LABELS = {
@@ -22,6 +23,7 @@ LABELS = {
   "KI": "I gain",
   "JERK_GAIN": "Jerk gain",
   "FRICTION_THRESHOLD": "Friction threshold",
+  "LAT_DELAY": "Steering delay (0 = learned)",
 }
 
 
