@@ -1160,7 +1160,9 @@ class SelfdriveD:
     from openpilot.starpilot.audio.blindspot_alert import ALERT_TYPE as BSM_ALERT, blindspot_alert
     loud, without_lateral = getattr(self, 'blindspot_alert_settings', (False, False))
     blindspot = blindspot_alert(CS, self.sm, loud=loud, without_lateral=without_lateral,
-                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns)
+                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns,
+                                car_ns=getattr(self, 'aol_car_state_log_ns', 0),
+                                car_valid=getattr(self, 'conditional_car_state_valid', False))
     if blindspot is not None:
       alerts = [alert for alert in alerts if alert.alert_type != 'laneChangeBlocked/warning']
       self.AM.alerts.pop('laneChangeBlocked/warning', None)
@@ -1461,7 +1463,8 @@ class SelfdriveD:
       if (toyota_qualified(self.CP, marked_only=True) and CS.standstill or
           angle_qualified(self.CP, marked_only=True) or
           self.CP.brand == 'hyundai' and len(self.CP.safetyConfigs) == 1 and
-          stock_canfd_qualified(self.CP, marked_only=True)):
+          stock_canfd_qualified(self.CP, marked_only=True) or
+          self.CP.brand == 'gm' and qualified_gm(self.CP) and self.CP.pcmCruise and not self.CP.openpilotLongitudinalControl):
         native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
         if stock_lateral_role(self, CS, native, intent, allow_independent_cancel=True,
                               allow_independent_brake=True, allow_independent_gas=True, now_ns=now_ns):

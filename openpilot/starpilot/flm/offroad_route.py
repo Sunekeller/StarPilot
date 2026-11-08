@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import time
 
-from openpilot.starpilot.flm.local_logs import read_closed_rlog
 from openpilot.starpilot.flm.log_decode import decode_full_rlog_segment
 from openpilot.starpilot.galaxy.drive_history import DriveHistory
 from openpilot.starpilot.galaxy.drive_analysis import _selected, _route_names, _closed_source
@@ -84,6 +83,14 @@ class RouteReceipt:
   original_end_ns: int
   completed_wall_ns: int
   original_controller_contexts: tuple
+
+
+@dataclass(frozen=True)
+class SelectedSourceReceipt(RouteReceipt):
+  """Whole-file identity with selected dense inputs, NOT a whole-drive assessment."""
+
+  decoded_segments: tuple = ()
+  whole_route_decoded: bool = False
 
 
 def walk_completed_route(root, route, *, permitted, consume):

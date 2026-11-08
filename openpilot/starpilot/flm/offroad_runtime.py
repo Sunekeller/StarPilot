@@ -4,6 +4,7 @@ No permissions, response witnesses, ACKs or source clocks are loaded from disk.
 """
 
 import time
+import os
 
 from openpilot.starpilot.flm.offroad_surface import ROUTE_NAMES as NAMES
 from openpilot.starpilot.flm.offroad_store import RouteScope, startup_row
@@ -58,8 +59,9 @@ def configuration_data(cp, ci, controller, params, *, manual_status):
   if selection.source == 'invalid' or descriptor.controller_mode not in (str(selection.mode), 'native'):
     raise ValueError('Actual controller does not match saved selection')
   fixed_manual = ()
-  if raw[DOCUMENT_KEY] is not None:
-    profile = parse_document(raw[DOCUMENT_KEY]).get(str(cp.carFingerprint))
+  document = raw[DOCUMENT_KEY]
+  if document is not None:
+    profile = parse_document(document).get(str(cp.carFingerprint))
     if profile is not None:
       if profile.flm is not None or profile.manual_coordinates is not None or profile.geometry is not None and profile.geometry.learning == 'force_off':
         raise ValueError('Manual or explicitly disabled tuning selected')
@@ -272,6 +274,11 @@ def configure(cp, ci, controller, params, *, manual_status):
     row, status = startup_row(params, scope)
     if row is None:
       return None, status
+    if row['state'] == 'ready_for_next_drive':
+      from openpilot.starpilot.flm.offroad_cache import directory_for_params
+
+      if os.path.lexists(directory_for_params(params) / ('trial-' + row['analysis_sha256'] + '.json')):
+        return None, 'provisional_trial_already_started'
     values = tuple((n, float(row['values'][n])) for n in NAMES)
     previous = tuple((n, float(row['previous'][n])) for n in NAMES)
     fixed = None if not fixed_manual else fixed_manual_numeric(controller, fixed_manual)
