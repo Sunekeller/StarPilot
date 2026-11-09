@@ -1160,9 +1160,7 @@ class SelfdriveD:
     from openpilot.starpilot.audio.blindspot_alert import ALERT_TYPE as BSM_ALERT, blindspot_alert
     loud, without_lateral = getattr(self, 'blindspot_alert_settings', (False, False))
     blindspot = blindspot_alert(CS, self.sm, loud=loud, without_lateral=without_lateral,
-                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns,
-                                car_ns=getattr(self, 'aol_car_state_log_ns', 0),
-                                car_valid=getattr(self, 'conditional_car_state_valid', False))
+                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns)
     if blindspot is not None:
       alerts = [alert for alert in alerts if alert.alert_type != 'laneChangeBlocked/warning']
       self.AM.alerts.pop('laneChangeBlocked/warning', None)
@@ -1463,8 +1461,7 @@ class SelfdriveD:
       if (toyota_qualified(self.CP, marked_only=True) and CS.standstill or
           angle_qualified(self.CP, marked_only=True) or
           self.CP.brand == 'hyundai' and len(self.CP.safetyConfigs) == 1 and
-          stock_canfd_qualified(self.CP, marked_only=True) or
-          self.CP.brand == 'gm' and qualified_gm(self.CP) and self.CP.pcmCruise and not self.CP.openpilotLongitudinalControl):
+          stock_canfd_qualified(self.CP, marked_only=True)):
         native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
         if stock_lateral_role(self, CS, native, intent, allow_independent_cancel=True,
                               allow_independent_brake=True, allow_independent_gas=True, now_ns=now_ns):
@@ -1780,12 +1777,11 @@ class SelfdriveD:
 
 
   def _decide_aol_axes(self, CS, intent, native, *, now_ns=0, ordinary_lag=False):
-    from openpilot.starpilot.car.gm.aol import physical_cancel_lateral_allowed, stock_ascm_independent_lateral, independent_lateral_below_engage
+    from openpilot.starpilot.car.gm.aol import physical_cancel_lateral_allowed, stock_ascm_independent_lateral, cc_independent_lateral_below_engage
     from openpilot.starpilot.car.hyundai.aol import physical_cancel_lateral_allowed as hkg_cancel_lateral_allowed
     from openpilot.starpilot.car.mazda.aol import physical_cancel_lateral_allowed as mazda_cancel_lateral_allowed
     from openpilot.starpilot.car.ford.aol import physical_cancel_lateral_allowed as ford_cancel_lateral_allowed
     from openpilot.starpilot.car.subaru.aol import sng_standstill_lateral_inhibit
-    from openpilot.starpilot.car.volkswagen.aol import lateral_output_inhibited as volkswagen_lateral_output_inhibited
     from openpilot.starpilot.aol.dm import lateral_event_context
     from openpilot.starpilot.car.toyota.legacy_lateral import below_engage_lateral_allowed as toyota_below_engage_lateral_allowed
     retained_dm_lateral, lateral_events = lateral_event_context(self, CS, intent, native, now_ns, ordinary_lag)
@@ -1819,7 +1815,7 @@ class SelfdriveD:
                            cruise_main_required=getattr(self, 'aol_cruise_main_required', True),
                            allow_below_engage_speed=bool((is_volt_ascm_longitudinal(self.CP) or
                                                         stock_ascm_independent_lateral(self.CP) or
-                                                        independent_lateral_below_engage(self.CP, intent,
+                                                        cc_independent_lateral_below_engage(self.CP, intent,
                                                           enabled=self.enabled, active=self.active)) and
                                                        not self.CP.flags & GMFlags.PEDAL_LONG) or
                              toyota_below_engage_lateral_allowed(self.CP, CS, intent, native,
@@ -1832,8 +1828,7 @@ class SelfdriveD:
                         self.sm['driverMonitoringState'].alertLevel == AlertLevel.three)),
       pause_brake_mps=self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0,
       gear_pause=reverse_pause,
-      lateral_inhibit=self.aol_dm_lateral_inhibit or sng_standstill_lateral_inhibit(self.CP, CS) or
-        volkswagen_lateral_output_inhibited(self.CP, CS) or any(
+      lateral_inhibit=self.aol_dm_lateral_inhibit or sng_standstill_lateral_inhibit(self.CP, CS) or any(
         sample.steerFaultTemporary or sample.brakePressed and not sample.standstill and
         sample.vEgo < (self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0)
         for sample, _ in getattr(self, 'car_state_samples', ())))

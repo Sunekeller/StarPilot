@@ -59,7 +59,8 @@ class LatControlTorque(LatControl):
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
-    gains = manual_gains.load({'KP': KP, 'KI': KI, 'JERK_GAIN': JERK_GAIN, 'FRICTION_THRESHOLD': 0.05})
+    gains = manual_gains.load({'KP': KP, 'KI': KI, 'JERK_GAIN': JERK_GAIN, 'FRICTION_THRESHOLD': 0.05, 'LAT_OFFSET': 0.0})
+    self.lat_offset = gains['LAT_OFFSET']
     self.jerk_gain = gains['JERK_GAIN']
     self.friction_threshold = gains['FRICTION_THRESHOLD']
     self.pid = PIDController([INTERP_SPEEDS, KP_INTERP[:-1] + [gains['KP']]], gains['KI'], rate=1 / self.dt)
@@ -152,6 +153,8 @@ class LatControlTorque(LatControl):
     ff = gravity_adjusted_future_lateral_accel
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
     ff -= self.torque_params.latAccelOffset
+    # Manual constant push for a car that pulls to one side (rear axle); moves the bias from the slow I term into feedforward
+    ff += self.lat_offset
     threshold = flm.base_threshold(self.flm_surface, CS.vEgo, self.friction_threshold)
     ff, threshold = flm.stages(self.flm_surface, CS, setpoint, desired_lateral_jerk, ff, threshold)
     if friction_policy is not None:

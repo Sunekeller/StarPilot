@@ -16,7 +16,7 @@ class ManualGainsFeature:
 
   def _defaults(self) -> dict[str, float]:
     from openpilot.selfdrive.controls.lib.latcontrol_torque import KP, KI, JERK_GAIN
-    return {"KP": KP, "KI": KI, "JERK_GAIN": JERK_GAIN, "FRICTION_THRESHOLD": 0.05, "LAT_DELAY": 0.0}
+    return {"KP": KP, "KI": KI, "JERK_GAIN": JERK_GAIN, "FRICTION_THRESHOLD": 0.05, "LAT_DELAY": 0.0, "LAT_OFFSET": 0.0}
 
   def rows(self, allowed: bool) -> list[FeatureRow]:
     defaults = self._defaults()

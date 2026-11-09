@@ -16,6 +16,7 @@ LIMITS = {
   "JERK_GAIN": (0.0, 0.6, 0.05),
   "FRICTION_THRESHOLD": (0.005, 0.2, 0.005),
   "LAT_DELAY": (0.0, 0.6, 0.01),  # seconds; 0 = use the learned steering delay
+  "LAT_OFFSET": (-1.0, 1.0, 0.05),  # m/s^2 added to feedforward; set to 0 after the rear axle repair
 }
 
 LABELS = {
@@ -24,6 +25,7 @@ LABELS = {
   "JERK_GAIN": "Jerk gain",
   "FRICTION_THRESHOLD": "Friction threshold",
   "LAT_DELAY": "Steering delay (0 = learned)",
+  "LAT_OFFSET": "Lateral offset (0 after repair)",
 }
 
 
