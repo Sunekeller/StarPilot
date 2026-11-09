@@ -114,7 +114,7 @@ def stock_lateral_user_event(cp):
 
 
 def stock_lateral_off(cp, cs, native, *, allow_independent_cancel=False, allow_independent_brake=False,
-  allow_independent_gas=False):
+  allow_independent_gas=False, allow_independent_main=False):
   from openpilot.starpilot.nostalgia import physical_cancel
   from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_qualified
 
@@ -127,18 +127,20 @@ def stock_lateral_off(cp, cs, native, *, allow_independent_cancel=False, allow_i
 
   stock_gas = bool(cp.brand == 'gm' and qualified_gm(cp) and cp.pcmCruise and not cp.openpilotLongitudinalControl or
                    cp.brand == 'subaru' and subaru_qualified(cp, marked_only=True))
+  from opendbc.car.hyundai.classic_scc_aol import qualified as classic_stock_qualified
+  classic_stock = classic_stock_qualified(cp, marked_only=True)
   independent_angle = angle_qualified(cp, marked_only=True)
   independent_brake = independent_angle or (allow_independent_brake and (
     toyota_qualified(cp, marked_only=True) and not cs.cruiseState.enabled or
-    cp.brand == 'hyundai' and len(cp.safetyConfigs) == 1 and stock_canfd_qualified(cp, marked_only=True)))
-  return bool(cp.pcmCruise and cs.cruiseState.available and
+    cp.brand == 'hyundai' and len(cp.safetyConfigs) == 1 and (stock_canfd_qualified(cp, marked_only=True) or classic_stock)))
+  return bool(cp.pcmCruise and (cs.cruiseState.available or allow_independent_main and classic_stock) and
     (not cs.cruiseState.enabled or independent_brake and allow_independent_brake and cs.brakePressed) and
     cs.canValid and not cs.canTimeout and not cs.steerFaultPermanent and not cs.steerFaultTemporary and
     not cs.accFaulted and not cs.doorOpen and not cs.seatbeltUnlatched and
     (not cs.brakePressed or independent_brake and allow_independent_brake) and
     not cs.regenBraking and (not cs.gasPressed or independent_angle or
       allow_independent_gas and (stock_gas or toyota_qualified(cp, marked_only=True) or
-        cp.brand == 'hyundai' and stock_canfd_qualified(cp, marked_only=True))) and
+        cp.brand == 'hyundai' and (stock_canfd_qualified(cp, marked_only=True) or classic_stock))) and
     (not physical_cancel(cs, cp) or independent_angle and allow_independent_cancel) and
     native is not None and native.requestedLateral and native.lateralAllowed and not native.requestedLongitudinal)
 
@@ -287,6 +289,7 @@ class TransportPauseFeedback:
     self.cold_park_waiting = False
     self.lateral_only_baseline = False
     self.temporary_eps_gas_override = False
+    self.hkg_eps_join_until_ns = 0
     self.lateral_source_ns = 0
     self.lateral_inventory = None
     self.lateral_native_ns = 0
@@ -570,6 +573,11 @@ class TransportPauseFeedback:
           not event.immediateDisable for event in users))
     from openpilot.starpilot.car.ford.aol import temporary_eps_pedal_recovery
     stock_temporary_user |= bool(cp.brand == 'ford' and eps_recovery and temporary_eps_pedal_recovery(cp, cs) and users and
+      not axis.desiredLongitudinal and not axis.longitudinalActive and
+      all(event.name in (stock_user, log.OnroadEvent.EventName.pedalPressed) and
+          not event.softDisable and not event.immediateDisable for event in users))
+    from openpilot.starpilot.car.subaru.aol import temporary_eps_brake_recovery as subaru_eps_brake_recovery
+    stock_temporary_user |= bool(eps_recovery and self.lateral_only_baseline and subaru_eps_brake_recovery(cp, cs) and users and
       not axis.desiredLongitudinal and not axis.longitudinalActive and
       all(event.name in (stock_user, log.OnroadEvent.EventName.pedalPressed) and
           not event.softDisable and not event.immediateDisable for event in users))
@@ -1211,7 +1219,12 @@ class TransportPauseFeedback:
           all(slot.controlsAllowed for slot, config in zip(newer.pandaInventory, cp.safetyConfigs, strict=True)
               if str(config.safetyModel) not in ('silent', 'noOutput'))):
         native = newer
-    return bool(native is not None and native.pandaInventory and native.requestedLateral and
+    expired_request_off = bool(qualified(cp, marked_only=True) and self.source_retention_started_ns and not axis.lateralActive and
+      not axis.desiredLongitudinal and not axis.longitudinalActive and
+      0 < self.lateral_source_ns <= now_ns <= self.lateral_source_ns + SAFETY_MAX_AGE_NS and
+      0 < self.source_retention_started_ns <= now_ns <= self.source_retention_started_ns + SAFETY_MAX_AGE_NS)
+    return bool(native is not None and native.pandaInventory and
+      (native.requestedLateral or expired_request_off and not native.longitudinalAllowed) and
       (not native.lateralAllowed or subaru_stop and not axis.desiredLateral and not axis.lateralActive) and
       (pending_stop or not native.requestedLongitudinal and not combined_stop or
        combined_stop and native.requestedLongitudinal and native.longitudinalAllowed) and
@@ -1315,6 +1328,7 @@ class TransportPauseFeedback:
         self.ordinary_warning_retained = False
         self.ordinary_warning_pending_baseline = None
         self.temporary_eps_event_ns = 0
+        self.hkg_eps_join_until_ns = 0
         self.ccnc_main_off_source_ns = 0
         self.cold_park_waiting = False
         self.cold_main_sparse_waiting = False
