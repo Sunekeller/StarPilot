@@ -25,10 +25,16 @@ class DeveloperMetrics:
   def __init__(self):
     self.drive = None
     self.maximum = None
+    self.driver_torque = None  # smoothed column torque sensor reading (raw MDPS units)
 
   def observe(self, *, drive, car, delay, torque, parameters, metric, cp=None):
     if drive != self.drive:
-      self.drive, self.maximum = drive, None
+      self.drive, self.maximum, self.driver_torque = drive, None, None
+    # Driver torque: ~1 s running average so a constant offset is readable while driving straight
+    raw_torque = finite(getattr(car, 'steeringTorque', None)) if car is not None else None
+    if raw_torque is not None:
+      self.driver_torque = raw_torque if self.driver_torque is None else self.driver_torque + 0.05 * (raw_torque - self.driver_torque)
+    steer_angle = finite(getattr(car, 'steeringAngleDeg', None)) if car is not None else None
     acceleration = finite(getattr(car, 'aEgo', None)) if car is not None else None
     if acceleration is not None and drive is not None and not bool(getattr(car, 'gasPressed', False)):
       self.maximum = max(0., acceleration) if self.maximum is None else max(self.maximum, acceleration)
@@ -46,8 +52,8 @@ class DeveloperMetrics:
         pass
     live_torque = torque is not None and bool(getattr(torque, 'useParams', False))
     return (
-      DeveloperMetric('ACCEL', shown(None if acceleration is None else acceleration * conversion, 2, f' {unit}')),
-      DeveloperMetric('MAX ACCEL', shown(None if car is None or self.maximum is None else self.maximum * conversion, 2, f' {unit}')),
+      DeveloperMetric('DRIVER TORQUE', shown(None if car is None else self.driver_torque, 1)),
+      DeveloperMetric('STEER ANGLE', shown(steer_angle, 1, ' deg')),
       DeveloperMetric('LEARNED DELAY' if delay is not None else 'BASE DELAY',
                       shown(getattr(delay, 'lateralDelay', None) if delay is not None else getattr(cp, 'steerActuatorDelay', None))),
       DeveloperMetric('LEARNED FRICTION' if live_torque else 'BASE FRICTION',
