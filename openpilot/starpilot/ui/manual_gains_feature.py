@@ -7,7 +7,7 @@ from openpilot.starpilot.lateral import manual_gains
 from openpilot.starpilot.ui.feature_settings_state import FeatureRow, FeatureSettingsRequest
 
 PREFIX = "manual_gains:"
-REASON = "Standard controller only. Applies next drive. Steering delay 0 = use the learned value."
+REASON = "Standard controller only. Applies next drive."
 
 
 class ManualGainsFeature:
@@ -15,8 +15,8 @@ class ManualGainsFeature:
     self.owner = owner
 
   def _defaults(self) -> dict[str, float]:
-    from openpilot.selfdrive.controls.lib.latcontrol_torque import KP, KI, JERK_GAIN
-    return {"KP": KP, "KI": KI, "JERK_GAIN": JERK_GAIN, "FRICTION_THRESHOLD": 0.05, "LAT_DELAY": 0.0, "LAT_OFFSET": 0.0}
+    from openpilot.selfdrive.controls.lib.latcontrol_torque import KP, KI, JERK_GAIN, LAT_OFFSET
+    return {"KP": KP, "KI": KI, "JERK_GAIN": JERK_GAIN, "FRICTION_THRESHOLD": 0.05, "LAT_OFFSET": LAT_OFFSET}
 
   def rows(self, allowed: bool) -> list[FeatureRow]:
     defaults = self._defaults()

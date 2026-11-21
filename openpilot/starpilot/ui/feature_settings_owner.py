@@ -175,6 +175,8 @@ class FeatureSettingsOwner:
     self.configuration_vehicle = configuration_vehicle
     self.torque = TorqueFeature(self)
     self.controller = ControllerFeature(self)
+    from openpilot.starpilot.ui.manual_gains_feature import ManualGainsFeature
+    self.manual_gains = ManualGainsFeature(self)
     self.slc_offsets = SlcOffsetOwner(params, lambda: self.authority("slc"), self.vehicle_params,
                                       repair_parked=lambda: self.authority("parked_preferences"),
                                       configuration_longitudinal=self.configuration_longitudinal)
@@ -1130,6 +1132,7 @@ class FeatureSettingsOwner:
       fields = {'steering_delay', 'torque:factor:value', 'torque:friction:value', 'torque:ratio:value'}
       rows.extend(replace(row, learned_value=references.get(row.key, 'Learned · —')) if row.key in fields else row
                   for row in numeric_rows)
+      rows.extend(self.manual_gains.rows(parked and self.authority("torque")))
     elif page == FeaturePage.AOL:
       title = "Always On Lateral"
       rows.extend(self._lateral_pause_rows(configurable))
@@ -1454,6 +1457,8 @@ class FeatureSettingsOwner:
       return self._apply_reverse_cruise(request)
     if key in LATERAL_PAUSE_KEYS:
       return self._apply_lateral_pause(request)
+    if key.startswith("manual_gains:"):
+      return self.manual_gains.apply(request)
     if key == "FordRearFogIndicator":
       return FordRearFogFeature(self).apply(request)
     if key == "FordHandsFreeCluster":
