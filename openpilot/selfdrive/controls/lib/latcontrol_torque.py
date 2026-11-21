@@ -37,6 +37,8 @@ KP_INTERP = [250, 120, 65, 30, 11.5, 5.5, 3.5, 2.0, KP]
 LP_FILTER_CUTOFF_HZ = 1.2
 JERK_LOOKAHEAD_SECONDS = 0.19
 JERK_GAIN = 0.15
+# Constant feedforward push against the car's left pull (m/s^2). Set to 0.0 once the pull is repaired.
+LAT_OFFSET = 0.20
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -59,7 +61,7 @@ class LatControlTorque(LatControl):
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
-    gains = manual_gains.load({'KP': KP, 'KI': KI, 'JERK_GAIN': JERK_GAIN, 'FRICTION_THRESHOLD': 0.05, 'LAT_OFFSET': 0.0})
+    gains = manual_gains.load({'KP': KP, 'KI': KI, 'JERK_GAIN': JERK_GAIN, 'FRICTION_THRESHOLD': 0.05, 'LAT_OFFSET': LAT_OFFSET})
     self.lat_offset = gains['LAT_OFFSET']
     self.jerk_gain = gains['JERK_GAIN']
     self.friction_threshold = gains['FRICTION_THRESHOLD']
