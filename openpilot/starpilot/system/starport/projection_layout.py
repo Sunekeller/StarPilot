@@ -11,7 +11,7 @@ from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK
                                                          SPEED_ALIGNMENTS, customization_metadata, validate_map_box, validate_widget_order)
 from openpilot.starpilot.ui.onroad_stopped_timer import timer_size
 from openpilot.starpilot.ui.onroad_torque_geometry import maximum_footprint
-from openpilot.starpilot.ui.onroad_customization import (SPEED_LAYOUT_V7, migrate_speed_layout, migrate_large_sign_layout,
+from openpilot.starpilot.ui.onroad_customization import (SPEED_LAYOUT_V7, migrate_speed_layout, migrate_large_sign_layout, migrate_attached_actions_gap,
                                                         place_attached_slc_actions, migrate_confirmation_layout)
 from openpilot.starpilot.ui.large_speed_geometry import sources_extent
 
@@ -21,6 +21,7 @@ DOCUMENT_PATH = DATA_DIR / 'layouts/document.json'
 
 # Layouts saved before these widgets existed gain them with their defaults.
 NAV_CARD, NAV_MAP = 'nav_card', 'nav_map'
+SCALED_WIDGETS = (NAV_CARD, 'pip_left', 'pip_right')
 NAV_HOME, NAV_WORK = 'nav_home', 'nav_work'
 FAVORITE_WIDGETS = (NAV_HOME, NAV_WORK)
 BOOKMARK_WIDGET = 'bookmark'
@@ -33,6 +34,7 @@ CAR_EXIT_SIZE = (96, 96)
 CAR_EXIT_MIN_OPACITY = 25
 NOW_PLAYING_WIDGET = 'now_playing'
 NOW_PLAYING_SIZE = (520, 96)
+NOW_PLAYING_SIZES = {'small': NOW_PLAYING_SIZE, 'big': (640, 264)}
 NOW_PLAYING_OPACITY = (0, 100, 85)
 JETLINK_SIZE = (420, 84)
 JETLINK_OPACITY = (0, 100, 85)
@@ -89,8 +91,16 @@ def layout_metadata_for_viewport(viewport):
   timer_w, _ = timer_size('large')
   widgets[STOPPED_TIMER_WIDGET]['default'].update(x=(width - timer_w) / 2, y=520)
   card_w, card_h = NAV_CARD_SIZE
-  card_x, card_bottom = 1230 + width - 1860, 415 + card_h + 15
+  card_x, card_bottom = 1230 + width - 1860, 355 + card_h + 15
   widgets[NAV_CARD]['default'].update(x=card_x)
+  for key in SCALED_WIDGETS:
+    widget = widgets[key]
+    w, h = widget['width'], widget['height']
+    widget['box'] = {'minWidth': round(w / 2), 'minHeight': round(h / 2),
+                     'maxWidth': min(w * 2, width - 60), 'maxHeight': min(h * 2, height - 60)}
+    widget['aspectRatio'] = w / h
+    widget['default'].update(width=w, height=h)
+
   # The map scales with the screen: about 30% of its width in a 4:3 frame,
   # right-aligned with the turn card and sitting just below it.
   map_w = max(MAP_MIN_SIZE[0], round(width * 0.3 / 10) * 10)
@@ -112,11 +122,11 @@ def layout_metadata_for_viewport(viewport):
                               'default': {'x': width - 30 - FAVORITE_SIZE[0], 'y': 155, 'enabled': False, 'display': 'words'}}
   widgets[NOW_PLAYING_WIDGET] = {'label': 'Now playing', 'kind': NOW_PLAYING_WIDGET,
                                  'width': NOW_PLAYING_SIZE[0], 'height': NOW_PLAYING_SIZE[1], 'colors': {},
-                                 'note': 'The song playing from Spotify or your phone over Bluetooth. Opacity sets the card background.',
+                                 'note': 'Music from Spotify or your phone. Big adds the seek bar, skip, shuffle and repeat. Opacity sets the card background.',
                                  'opacity': {'min': NOW_PLAYING_OPACITY[0], 'max': NOW_PLAYING_OPACITY[1], 'default': NOW_PLAYING_OPACITY[2]},
-                                 'collapseToggle': True,
+                                 'collapseToggle': True, 'sizes': {name: list(size) for name, size in NOW_PLAYING_SIZES.items()},
                                  'default': {'x': width - 30 - NOW_PLAYING_SIZE[0], 'y': height - 30 - NOW_PLAYING_SIZE[1],
-                                             'enabled': True, 'opacity': NOW_PLAYING_OPACITY[2], 'collapse': False}}
+                                             'enabled': True, 'opacity': NOW_PLAYING_OPACITY[2], 'collapse': False, 'size': 'small'}}
   widgets[JETLINK_WIDGET] = {'label': 'Jetlink status', 'kind': JETLINK_WIDGET,
                              'width': JETLINK_SIZE[0], 'height': JETLINK_SIZE[1], 'colors': {},
                              'note': 'Shown while Jetlink is on: connection, device and host processing time. Opacity sets the card background.',
@@ -184,19 +194,26 @@ def default_layout(screen, display=None):
 def default_layout_for_viewport(viewport, display=None):
   metadata = layout_metadata_for_viewport(viewport)
   display = {**DISPLAY_DEFAULTS, **{key: value for key, value in (display or {}).items() if key in DISPLAY_DEFAULTS}}
-  result = {'version': 5, 'clock24Hour': False, 'largeUiGammaTrial': False, **display, 'canvas': {key: metadata[key] for key in ('width', 'height')},
+  result = {'version': 7, 'clock24Hour': False, 'largeUiGammaTrial': False, **display, 'canvas': {key: metadata[key] for key in ('width', 'height')},
           'widgets': {key: {**widget['default'], **({'size': 192} if key == 'steering_wheel' else {})}
                       for key, widget in metadata['widgets'].items()}}
   place_attached_slc_actions(result['widgets'], metadata['bounds'], sources_extent(result))
   return result
 
 
+def now_playing_size(placement):
+  """The card's (width, height); layouts saved before the size choice are small."""
+  return NOW_PLAYING_SIZES.get((placement or {}).get('size'), NOW_PLAYING_SIZE)
+
+
 def placement_size(key, widget, placement):
+  if key == NOW_PLAYING_WIDGET:
+    return now_playing_size(placement)
   if key in DISPLAY_WIDGETS and placement.get('display') == 'icons':
     return FAVORITE_ICON_SIZE, FAVORITE_ICON_SIZE
   if widget.get('resizable'):
     return (placement.get('size', widget['resizable']['default']),) * 2
-  if key == NAV_MAP:
+  if widget.get('box'):
     return placement['width'], placement['height']
   return widget['width'], widget['height']
 
@@ -222,7 +239,7 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
   if type(value) is dict:
     fields |= {field for field in ('widgetOrder', 'clock24Hour', 'largeUiGammaTrial', *DISPLAY_DEFAULTS) if field in value}
   if (type(value) is not dict or set(value) != fields or
-      type(value['version']) is not int or value['version'] not in (1, 2, 3, 4, 5) or
+      type(value['version']) is not int or value['version'] not in (1, 2, 3, 4, 5, 6, 7) or
       value['canvas'] != {key: metadata[key] for key in ('width', 'height')} or
       type(value['widgets']) is not dict or not set(value['widgets']) <= set(metadata['widgets']) or
       not set(metadata['widgets']) - set(value['widgets']) <= {CEM_GAUGE_WIDGET, MODE_WIDGET, CLOCK_WIDGET, WEATHER_WIDGET, *PROJECTION_WIDGETS}):
@@ -264,6 +281,7 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       placement.setdefault('opacity', CARD_WIDGETS[key][2])
     if key == NOW_PLAYING_WIDGET and type(placement) is dict:
       placement.setdefault('collapse', False)
+      placement.setdefault('size', 'small')
     if key == 'driver_monitor' and type(placement) is dict and 'size' not in placement:
       for axis in ('x', 'y'):
         if type(placement.get(axis)) in (int, float):
@@ -272,12 +290,16 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     if (key == 'driver_monitor' and 'following_distance' not in value['widgets'] and type(placement) is dict and
         (placement.get('x'), placement.get('y'), placement.get('size')) == (120, 840 + viewport[1] - 1080, 128)):
       placement['x'] = widget['default']['x']
+    if key in SCALED_WIDGETS and type(placement) is dict:
+      placement.setdefault('width', widget['width'])
+      placement.setdefault('height', widget['height'])
     fields = ({'x', 'y', 'enabled'} | ({'size'} if widget.get('resizable') else set()) |
               ({'display'} if key in DISPLAY_WIDGETS else set()) |
               ({'opacity', 'background'} if key in ACTION_WIDGETS else set()) |
               ({'opacity'} if key == 'cruise_limits' or key in CARD_WIDGETS else set()) |
-              ({'collapse'} if key == NOW_PLAYING_WIDGET else set()) |
-              ({'width', 'height', 'opacity'} if key == NAV_MAP else set()))
+              ({'collapse', 'size'} if key == NOW_PLAYING_WIDGET else set()) |
+              ({'width', 'height'} if widget.get('box') else set()) |
+              ({'opacity'} if key == NAV_MAP else set()))
     if type(placement) is not dict or set(placement) != fields or type(placement['enabled']) is not bool:
       raise ValueError('Invalid projection widget')
     if widget.get('required') is True and placement['enabled'] is not True:
@@ -294,12 +316,21 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       raise ValueError('Invalid card opacity')
     if key == NOW_PLAYING_WIDGET and type(placement['collapse']) is not bool:
       raise ValueError('Invalid now playing collapse setting')
+    if key == NOW_PLAYING_WIDGET and (type(placement['size']) is not str or placement['size'] not in NOW_PLAYING_SIZES):
+      raise ValueError('Invalid now playing size')
     if key == CAR_EXIT and placement['opacity'] < CAR_EXIT_MIN_OPACITY:
       raise ValueError('Exit to car opacity must be at least 25%')
     if widget.get('resizable'):
       size, limits = placement['size'], widget['resizable']
       if type(size) is not int or not limits['min'] <= size <= limits['max']:
         raise ValueError('Invalid widget size')
+    if key in SCALED_WIDGETS:
+      box = widget['box']
+      if any(type(placement[axis]) is not int or not box[low] <= placement[axis] <= box[high]
+             for axis, low, high in (('width', 'minWidth', 'maxWidth'), ('height', 'minHeight', 'maxHeight'))):
+        raise ValueError('Invalid projection widget size')
+      if abs(placement['height'] - placement['width'] / widget['aspectRatio']) > 1:
+        raise ValueError('Invalid projection widget aspect ratio')
     if key == NAV_MAP:
       validate_map_box(placement, widget)
     dimensions = placement_size(key, widget, placement)
@@ -307,6 +338,8 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       dimensions = SPEED_LAYOUT_V7['large'][key][:2]
     elif value['version'] < 5 and key == 'cruise_limits':
       dimensions = (widget['width'], 132)
+    elif value['version'] < 6 and key == 'cruise_limits':
+      dimensions = (widget['width'], 168)
     # Version 2 and older saved the CEM gauge's full drawing frame; check that, then move to the inset box.
     old_gauge = key == CEM_GAUGE_WIDGET and value['version'] < 3 and key in value['widgets']
     if old_gauge:
@@ -318,6 +351,11 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
         type(placement[axis]) in (int, float) and math.isfinite(placement[axis]) and
         bounds[axis] <= placement[axis] <= bounds[axis] + bounds[extent] - dimension
         for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), pair, strict=True))), dimensions)
+    if key == NOW_PLAYING_WIDGET:
+      # A larger card size may overhang a saved spot; pull it back in.
+      for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), dimensions, strict=True):
+        if type(placement[axis]) in (int, float) and math.isfinite(placement[axis]):
+          placement[axis] = min(placement[axis], bounds[axis] + bounds[extent] - dimension)
     for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), dimensions, strict=True):
       number = placement[axis]
       if (type(number) not in (int, float) or not math.isfinite(number) or
@@ -335,7 +373,14 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     actions = result['widgets']['speed_limit_actions']
     if (actions['x'], actions['y']) == (100, 296):
       actions.update(x=metadata['widgets']['speed_limit_actions']['default']['x'], y=metadata['widgets']['speed_limit_actions']['default']['y'])
-    result['version'] = 5
+    result['version'] = 7
+  if value['version'] == 5 and result.get('speedSources') is True:
+    card, actions = result['widgets']['cruise_limits'], result['widgets']['speed_limit_actions']
+    old_gap = 284 + (8 if result.get('speedSourcesCard') is True else 0)
+    if actions['x'] == card['x'] + 24 and actions['y'] == card['y'] + old_gap:
+      actions['y'] = card['y'] + 192
+  if value['version'] < 7:
+    migrate_attached_actions_gap(result['widgets'], bounds)
   migrate_confirmation_layout(result['widgets'], 'large', metadata['widgets'], bounds, extra_height=sources_extent(result))
   place_attached_slc_actions(result['widgets'], bounds, sources_extent(result))
   if len(json.dumps(result, separators=(',', ':'), allow_nan=False).encode()) > MAX_BYTES:

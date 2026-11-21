@@ -18,6 +18,7 @@ from opendbc.bluepilot_lateral.core.lateral_angle_ext import LateralAngleExt
 from opendbc.bluepilot_lateral.core.lateral_inputs import lateral_inputs_complete
 from opendbc.bluepilot_lateral.can.fordcan_ext import lat_ctl2_checksum, create_lat_ctl2_msg
 from opendbc.car.ford.values import CarControllerParams, FordFlags
+from opendbc.car.ford.aol import qualified as qualified_aol
 from opendbc.car import structs
 from opendbc.car.vehicle_model import calc_slip_factor
 from opendbc.bluepilot_lateral.core.carcontroller_ext import pinion_vehicle_model
@@ -41,6 +42,17 @@ HOST_SETTINGS = {
   "lane_centering_strength_ang": 0.0,
 }
 SETTINGS_REFRESH_FRAMES = 300  # 3 s of card's 100 Hz loop
+
+
+def quiet_cluster_display(address, data):
+  if len(data) != 8:
+    return False
+  if address == 0x18A:
+    return ((data[5] >> 2) & 7) <= 1 and not (
+      data[0] & 0xE0 or data[1] & 1 or data[3] & 0xF0 or data[4] & 0xC0 or data[5] & 0x80 or data[6] & 0x3F)
+  if address == 0x3D8:
+    return data[6] >> 3 in (0, 30) and not (data[4] & 0x0D or data[5] & 0x18 or data[6] & 6)
+  return False
 
 
 def startup_params(params, *, enabled: bool) -> dict[str, str]:
@@ -77,15 +89,24 @@ class BluePilotInputs:
     self.frames = 0
     self.settings = []
     self.unknown_keys = set()
+    self.settings = self.read_settings()
+    self.pending_settings = (self.controller_choice, self.settings)
 
   def read_settings(self):
+    self.controller_choice, entries = self._read_settings()
+    return entries
+
+  def refresh_settings(self):
+    self.pending_settings = self._read_settings()
+
+  def _read_settings(self):
     entries = []
-    self.controller_choice = read_controller(self.cp, self.params)[0]
+    choice = read_controller(self.cp, self.params)[0]
     for key in BP_LATERAL_PARAMS:
       try:
         if key == "FordPrefLateralControl":
-          value = int(self.controller_choice in (FordController.BLUEPILOT_ANGLE, FordController.STARPILOT))
-        elif key == "disable_BP_lat_UI" and self.controller_choice is None:
+          value = int(choice in (FordController.BLUEPILOT_ANGLE, FordController.STARPILOT))
+        elif key == "disable_BP_lat_UI" and choice is None:
           value = True
         else:
           value = HOST_SETTINGS[key] if key in HOST_SETTINGS else self.params.get(key, return_default=True)
@@ -96,12 +117,12 @@ class BluePilotInputs:
         continue
       if value is not None:
         entries.append(FrameInputs.Param(key, encode(value)))
-    return entries
+    return choice, entries
 
   def update(self) -> FrameInputs:
     self.sm.update(0)
     if self.frames % SETTINGS_REFRESH_FRAMES == 0:
-      self.settings = self.read_settings()
+      self.controller_choice, self.settings = self.pending_settings
     self.frames += 1
 
     frame = FrameInputs(params=self.settings)
@@ -234,6 +255,9 @@ class FordBluePilotController(BluePilotLateral):
     return self._constrain_curvature(CC, CS, actuators, apply_curvature_last, packets, applied)
 
   def order_can_sends(self, frames):
+    if not self.CP.flags & (FordFlags.CANFD | FordFlags.NEW_PORT) and qualified_aol(self.CP, marked_only=True) and not self.lateral_active:
+      # Inactive classic steering returns display ownership to the camera.
+      frames = [(a, d, b) for a, d, b in frames if b != self.CAN.main or not quiet_cluster_display(a, d)]
     if (not self.starpilot_selected or self.curv.primary_lateral_control != PrimaryLateralControl.angle or
         self.frame % CarControllerParams.STEER_STEP or self.frame % CarControllerParams.LKA_STEP):
       return frames

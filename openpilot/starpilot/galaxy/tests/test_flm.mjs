@@ -73,6 +73,14 @@ assert.doesNotMatch(readFileSync(new URL('../web/js/flm.js', import.meta.url), '
 for (const view of ['overview', 'tune', 'activity', 'plots']) assert(FlmPage.template.includes(`view === '${view}'`))
 const choice = { version: 1, valid: true, enabled: true, parked: true, vehicle: 'HYUNDAI_IONIQ_6' }
 assert(validLearningPreference(choice))
+for (const controller of [null, 'torque', 'pid', 'angle', 'curvature']) {
+  const preference = { ...choice, controller }
+  assert(validLearningPreference(preference))
+  assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: true, preference }), ['pid', 'angle', 'curvature'].includes(controller))
+  assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: false, preference }), false)
+}
+assert(!validLearningPreference({ ...choice, controller: 'unknown' }))
+assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: true, preference: choice }), false)
 assert.equal(tunerStatus({ ...value, preference: choice }, false, true).key, 'parked')
 assert.equal(tunerStatus({ ...value, preference: { ...choice, enabled: false } }, true, true).key, 'off')
 assert.equal(tunerStatus({ ...value, preference: choice }, false, false).key, 'stale')
@@ -89,14 +97,14 @@ for (const invalid of [null, {}, { ...choice, version: true }, { ...choice, vali
 
 function instance() {
   const vm = { ...FlmPage.data(), activePage: true, mode: "local", unauthorized: () => vm.auth++, auth: 0,
-    poller: { stop() {} } }
+    poller: { stop() {} }, $nextTick: callback => Promise.resolve().then(callback) }
   for (const [name, method] of Object.entries(FlmPage.methods)) vm[name] = method.bind(vm)
   for (const [name, method] of Object.entries(FlmPage.computed)) Object.defineProperty(vm, name, { get: () => method.call(vm) })
   return vm
 }
 const originalFetch = globalThis.fetch, originalDocument = globalThis.document
 try {
-  globalThis.document = { hidden: false, addEventListener() {}, removeEventListener() {} }
+  globalThis.document = { getElementById: () => null, hidden: false, addEventListener() {}, removeEventListener() {} }
   const mounted = instance()
   mounted.load = () => {}
   FlmPage.mounted.call(mounted)
@@ -122,9 +130,9 @@ try {
   const focused = []
   const event = { key: 'ArrowRight', preventDefault() {}, currentTarget: { parentElement: { querySelectorAll: () =>
     ['overview', 'tune', 'activity', 'plots'].map(name => ({ focus: () => focused.push(name) })) } } }
-  vm.tabKey(event); assert.equal(vm.view, 'tune'); assert.deepEqual(focused, ['tune'])
-  event.key = 'End'; vm.tabKey(event); assert.equal(vm.view, 'plots')
-  event.key = 'Home'; vm.tabKey(event); assert.equal(vm.view, 'overview')
+  vm.tabKey(event); await Promise.resolve(); assert.equal(vm.view, 'tune'); assert.deepEqual(focused, ['tune'])
+  event.key = 'End'; vm.tabKey(event); await Promise.resolve(); assert.equal(vm.view, 'plots')
+  event.key = 'Home'; vm.tabKey(event); await Promise.resolve(); assert.equal(vm.view, 'overview')
   globalThis.fetch = async () => { throw new TypeError("offline") }
   await vm.load(); assert(!vm.currentApplied); assert.equal(vm.report, value)
   globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: "Sign in" }) })
@@ -140,6 +148,6 @@ try {
 console.log("Auto Learn canonical routing, exact full30 data, missing/stale application, auth and cancellation contracts passed")
 
 assert.doesNotMatch(FlmPage.template, /Steering settings|One change\. A fair comparison\.|Comparable driving windows establish/)
-assert.match(FlmPage.template, /Tuning and Analysis/)
+assert.match(FlmPage.template, /<h2>Your steering<\/h2>/)
 assert.match(FlmPage.template, /<PlotsPage[^>]+:active="view === 'plots'"[^>]+embedded/)
 assert.doesNotMatch(FlmPage.template, /gx-tuner__plots-link/)

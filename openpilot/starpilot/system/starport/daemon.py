@@ -120,6 +120,14 @@ def handle(supervisor: Supervisor, request: dict[str, Any], verifier: StarPortSo
     supervisor.set_dedicated_wifi(request.get("enabled") is True)
   elif command == "set_allow_hevc":
     supervisor.set_allow_hevc(request.get("enabled") is True)
+  elif command == "set_keyframe_test":
+    supervisor.set_keyframe_test(request.get("enabled") is True)
+  elif command == "set_tall_hevc":
+    supervisor.set_tall_hevc(request.get("enabled") is True)
+  elif command == "set_unacked_video":
+    supervisor.set_unacked_video(request.get("enabled") is True)
+  elif command == "set_patient_tcp":
+    supervisor.set_patient_tcp(request.get("enabled") is True)
   elif command == "set_head_unit_experiments":
     supervisor.set_head_unit_experiments(request.get("enabled") is True)
   elif command == "set_head_unit_experiment_rule":
@@ -223,7 +231,7 @@ def main() -> int:
   from openpilot.common.hardware import COMMA_HARDWARE
   placement = None
   if COMMA_HARDWARE:
-    os.setpriority(os.PRIO_PROCESS, 0, 5)
+    os.setpriority(os.PRIO_PROCESS, 0, 0)
     from openpilot.starpilot.system.starport.placement import RendererPlacement
     placement = RendererPlacement(idle=False, report=lambda event: print(json.dumps(event), flush=True))
     placement.start()
