@@ -25,16 +25,10 @@ class DeveloperMetrics:
   def __init__(self):
     self.drive = None
     self.maximum = None
-    self.driver_torque = None  # smoothed column torque sensor reading (raw MDPS units)
 
-  def observe(self, *, drive, car, delay, torque, parameters, metric, cp=None):
+  def observe(self, *, drive, car, delay, torque, parameters, metric, cp=None, applied=None, delay_selection=None):
     if drive != self.drive:
-      self.drive, self.maximum, self.driver_torque = drive, None, None
-    # Driver torque: ~1 s running average so a constant offset is readable while driving straight
-    raw_torque = finite(getattr(car, 'steeringTorque', None)) if car is not None else None
-    if raw_torque is not None:
-      self.driver_torque = raw_torque if self.driver_torque is None else self.driver_torque + 0.05 * (raw_torque - self.driver_torque)
-    steer_angle = finite(getattr(car, 'steeringAngleDeg', None)) if car is not None else None
+      self.drive, self.maximum = drive, None
     acceleration = finite(getattr(car, 'aEgo', None)) if car is not None else None
     if acceleration is not None and drive is not None and not bool(getattr(car, 'gasPressed', False)):
       self.maximum = max(0., acceleration) if self.maximum is None else max(self.maximum, acceleration)
@@ -44,22 +38,30 @@ class DeveloperMetrics:
       number = finite(value)
       return '—' if number is None else f'{number:.{decimals}f}{suffix}'
 
-    tune = None
-    if cp is not None:
-      try:
-        tune = cp.lateralTuning.torque if cp.lateralTuning.which() == 'torque' else None
-      except (AttributeError, TypeError, ValueError):
-        pass
-    live_torque = torque is not None and bool(getattr(torque, 'useParams', False))
+    actual = applied if applied is not None and getattr(applied, 'version', 0) == 1 else None
+    def torque_metric(field, label):
+      manual = actual is not None and bool(getattr(actual, 'manual' + field.capitalize(), False))
+      source = 'LOCKED ' if manual else 'LEARNED ' if actual is not None and actual.learned else 'CURRENT '
+      return DeveloperMetric(source + label, shown(getattr(actual, field, None)))
+
+    manual_delay = delay_selection is not None and delay_selection.value is not None
+    delay_value = getattr(delay, 'lateralDelay', None) if delay is not None else None
+    delay_label = 'ACTUATOR DELAY'
+    if delay is not None:
+      if manual_delay and finite(delay_value) is not None and abs(delay_value - delay_selection.value) < 1e-5:
+        delay_label = 'LOCKED DELAY'
+      elif not manual_delay and str(getattr(delay, 'status', '')) == 'estimated':
+        delay_label = 'LEARNED DELAY'
+    elif not manual_delay:
+      base_delay = finite(getattr(cp, 'steerActuatorDelay', None))
+      delay_value = None if base_delay is None else base_delay + .2
+      delay_label = 'BASE DELAY'
     return (
-      DeveloperMetric('DRIVER TORQUE', shown(None if car is None else self.driver_torque, 1)),
-      DeveloperMetric('STEER ANGLE', shown(steer_angle, 1, ' deg')),
-      DeveloperMetric('LEARNED DELAY' if delay is not None else 'BASE DELAY',
-                      shown(getattr(delay, 'lateralDelay', None) if delay is not None else getattr(cp, 'steerActuatorDelay', None))),
-      DeveloperMetric('LEARNED FRICTION' if live_torque else 'BASE FRICTION',
-                      shown(getattr(torque, 'frictionCoefficientFiltered', None) if live_torque else getattr(tune, 'friction', None))),
-      DeveloperMetric('LEARNED LAT ACCEL' if live_torque else 'BASE LAT ACCEL',
-                      shown(getattr(torque, 'latAccelFactorFiltered', None) if live_torque else getattr(tune, 'latAccelFactor', None))),
+      DeveloperMetric('ACCEL', shown(None if acceleration is None else acceleration * conversion, 2, f' {unit}')),
+      DeveloperMetric('MAX ACCEL', shown(None if car is None or self.maximum is None else self.maximum * conversion, 2, f' {unit}')),
+      DeveloperMetric(delay_label, shown(delay_value, suffix=' s')),
+      torque_metric('friction', 'FRICTION'),
+      torque_metric('factor', 'LAT ACCEL'),
       DeveloperMetric('STEER RATIO', shown(getattr(parameters, 'steerRatio', None))),
       DeveloperMetric('STEER STIFF', shown(getattr(parameters, 'stiffnessFactor', None))),
     )
